@@ -1,0 +1,427 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         String   @default("ADMIN") // ADMIN, FINANCE, SUPPLIER, LOGISTICS
+  companyName  String?
+  phone        String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Old single-supplier relation (kept for backward compat, will migrate to ProductSupplier)
+  supplierProducts  Product[]
+  productSuppliers  ProductSupplier[]
+  createdPOs        PurchaseOrder[]     @relation("POCreator")
+  supplierPOs       PurchaseOrder[]     @relation("POSupplier")
+  paymentSlips      PaymentSlip[]
+  uploadedDocuments ShipmentDocument[]
+  salesEntries      MonthlySales[]
+  stockUpdates      StockAvailability[]
+  etaUpdates        ETAUpdate[]
+  notifications     Notification[]
+  etaChangeRequests ETAChangeRequest[]  @relation("ETARequester")
+  etaChangeResponses ETAChangeRequest[] @relation("ETAResponder")
+}
+
+model ProductCategory {
+  id                    String    @id @default(cuid())
+  name                  String    @unique
+  defaultTargetTurnover Float     @default(6)
+  isActive              Boolean   @default(true)
+  products              Product[]
+}
+
+model Product {
+  id              String   @id @default(cuid())
+  sku             String   @unique
+  sellerSku       String?  @unique // Seller SKU (marketplace SKU)
+  barcode         String?
+  name            String
+  categoryId      String
+  supplierId      String   // Default/primary supplier
+  unitCost        Float    // Default cost (from primary supplier)
+  sellingPrice    Float?
+  weightPerUnit   Float
+  volumePerUnit   Float
+  unitsPerCarton  Int      @default(1)
+  minOrderQty     Int      @default(1)
+  currentStock    Int      @default(0)
+  reorderPoint    Int      @default(0)
+  targetTurnover  Float?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  category          ProductCategory     @relation(fields: [categoryId], references: [id])
+  supplier          User                @relation(fields: [supplierId], references: [id])
+  suppliers         ProductSupplier[]   // All suppliers who can provide this product
+  monthlySales      MonthlySales[]
+  poLineItems       POLineItem[]
+  stockAvailability StockAvailability[]
+  promoProducts     PromoProduct[]
+  mappingComponents SkuMappingComponent[] // Bundles/variants that contain this base product
+
+  @@index([categoryId])
+  @@index([supplierId])
+  @@index([sku])
+  @@index([sellerSku])
+  @@index([barcode])
+}
+
+// SKU mapping rules: decompose marketplace SKUs/bundles into base products
+// e.g. ABCX6 → 6× ABC, ABC+CDE → 1× ABC + 1× CDE, EFJ → 12× OPQ
+model SkuMapping {
+  id              String   @id @default(cuid())
+  marketplaceSku  String   @unique // The SKU seen on marketplace (e.g. "ABCX6", "ABC+CDE", "EFJ")
+  description     String?
+  source          String   @default("MANUAL") // MANUAL, AUTO_PARSED, IMPORTED
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  components SkuMappingComponent[]
+
+  @@index([marketplaceSku])
+}
+
+model SkuMappingComponent {
+  id          String @id @default(cuid())
+  mappingId   String
+  productId   String
+  quantity    Float  // Quantity of base product (supports fractional like 0.5)
+
+  mapping SkuMapping @relation(fields: [mappingId], references: [id], onDelete: Cascade)
+  product Product    @relation(fields: [productId], references: [id])
+
+  @@unique([mappingId, productId])
+  @@index([mappingId])
+  @@index([productId])
+}
+
+// Many-to-many: Product can have multiple suppliers at different prices
+model ProductSupplier {
+  id            String   @id @default(cuid())
+  productId     String
+  supplierId    String
+  unitCost      Float    // This supplier's price for this product
+  currency      String   @default("RMB")
+  leadTimeDays  Int      @default(30) // Supplier lead time in days
+  transitDays   Int      @default(21) // Shipping transit days to Malaysia
+  moq           Int      @default(1)  // Supplier minimum order qty
+  isPreferred   Boolean  @default(false)
+  notes         String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  product  Product @relation(fields: [productId], references: [id])
+  supplier User    @relation(fields: [supplierId], references: [id])
+
+  @@unique([productId, supplierId])
+  @@index([productId])
+  @@index([supplierId])
+  @@index([unitCost])
+}
+
+model MonthlySales {
+  id        String   @id @default(cuid())
+  productId String
+  year      Int
+  month     Int
+  channel   String   @default("MANUAL")
+  unitsSold Int
+  revenue   Float    @default(0)
+  enteredBy String
+  createdAt DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id])
+  enterer User    @relation(fields: [enteredBy], references: [id])
+
+  @@unique([productId, year, month, channel])
+  @@index([productId])
+  @@index([channel])
+}
+
+model Promo {
+  id            String   @id @default(cuid())
+  name          String
+  year          Int
+  month         Int
+  channel       String?
+  upliftType    String   @default("UNITS")
+  notes         String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  products PromoProduct[]
+
+  @@index([year, month])
+}
+
+model PromoProduct {
+  id            String @id @default(cuid())
+  promoId       String
+  productId     String
+  upliftValue   Float
+
+  promo   Promo   @relation(fields: [promoId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@unique([promoId, productId])
+  @@index([promoId])
+  @@index([productId])
+}
+
+model StockAvailability {
+  id           String   @id @default(cuid())
+  productId    String
+  updatedById  String
+  availableQty Int
+  leadTimeDays Int?
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  product   Product @relation(fields: [productId], references: [id])
+  updatedBy User    @relation(fields: [updatedById], references: [id])
+
+  @@index([productId])
+}
+
+model PurchaseOrder {
+  id              String    @id @default(cuid())
+  poNumber        String    @unique
+  supplierId      String
+  createdById     String
+  status          String    @default("DRAFT") // DRAFT, PENDING_SUPPLIER, CONFIRMED, IN_TRANSIT, CUSTOMS, RECEIVED, COMPLETED, CANCELLED
+  containerType   String?
+  totalWeight     Float     @default(0)
+  totalVolume     Float     @default(0)
+  totalAmount     Float     @default(0)
+  depositPercent  Float     @default(0)
+  depositAmount   Float     @default(0)
+  depositPaidDate DateTime?
+  balanceDueDays  Int       @default(30)
+  currency        String    @default("RM")
+  requestedEta    DateTime? // Admin's requested ETA
+  notes           String?
+  supplierNotes   String?   // Supplier's response/notes
+  supplierInvoiceNo String?  // Supplier's invoice/proforma number (e.g. JZY260311B)
+  confirmedAt     DateTime?
+  sentToSupplierAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  supplier  User         @relation("POSupplier", fields: [supplierId], references: [id])
+  createdBy User         @relation("POCreator", fields: [createdById], references: [id])
+  lineItems POLineItem[]
+  shipment  Shipment?
+  payments  Payment[]
+
+  @@index([supplierId])
+  @@index([status])
+  @@index([createdById])
+}
+
+model POLineItem {
+  id              String  @id @default(cuid())
+  purchaseOrderId String
+  productId       String
+  quantity        Int
+  unitCost        Float
+  totalCost       Float
+  weightSubtotal  Float
+  volumeSubtotal  Float
+  suggestedQty    Int?
+  batchNumber     String? // Supplier fills in batch number
+  notes           String?
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product       Product       @relation(fields: [productId], references: [id])
+
+  @@index([purchaseOrderId])
+  @@index([productId])
+}
+
+model ContainerConfig {
+  id            String  @id @default(cuid())
+  type          String  @unique
+  maxWeightKg   Float
+  maxVolumeCbm  Float
+  estimatedCost Float   @default(0)
+  description   String?
+}
+
+model Shipment {
+  id              String    @id @default(cuid())
+  purchaseOrderId String    @unique
+  shipmentRef     String?
+  status          String    @default("PENDING")
+  etd             DateTime?
+  eta             DateTime?
+  actualArrival   DateTime?
+  portOfOrigin    String?
+  portOfDest      String    @default("Port Klang")
+  shippingLine    String?
+  vesselName      String?
+  containerNumber String?
+  logisticsUserId String?
+  notes           String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  purchaseOrder    PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id])
+  documents        ShipmentDocument[]
+  etaUpdates       ETAUpdate[]
+  etaChangeRequests ETAChangeRequest[]
+
+  @@index([status])
+  @@index([eta])
+}
+
+model ETAUpdate {
+  id          String    @id @default(cuid())
+  shipmentId  String
+  previousEta DateTime?
+  newEta      DateTime
+  reason      String?
+  updatedById String
+  createdAt   DateTime  @default(now())
+
+  shipment  Shipment @relation(fields: [shipmentId], references: [id])
+  updatedBy User     @relation(fields: [updatedById], references: [id])
+
+  @@index([shipmentId])
+}
+
+// ETA change requests between admin and supplier
+model ETAChangeRequest {
+  id            String    @id @default(cuid())
+  shipmentId    String
+  requestedById String
+  requestType   String    // "EARLIER" or "DELAY"
+  currentEta    DateTime
+  requestedEta  DateTime
+  reason        String
+  status        String    @default("PENDING") // PENDING, ACCEPTED, DECLINED
+  respondedById String?
+  responseNote  String?
+  respondedAt   DateTime?
+  createdAt     DateTime  @default(now())
+
+  shipment    Shipment @relation(fields: [shipmentId], references: [id])
+  requestedBy User     @relation("ETARequester", fields: [requestedById], references: [id])
+  respondedBy User?    @relation("ETAResponder", fields: [respondedById], references: [id])
+
+  @@index([shipmentId])
+  @@index([status])
+}
+
+model ShipmentDocument {
+  id           String   @id @default(cuid())
+  shipmentId   String
+  type         String
+  fileName     String
+  fileData     Bytes
+  fileSize     Int
+  mimeType     String
+  uploadedById String
+  notes        String?
+  createdAt    DateTime @default(now())
+
+  shipment   Shipment @relation(fields: [shipmentId], references: [id])
+  uploadedBy User     @relation(fields: [uploadedById], references: [id])
+
+  @@index([shipmentId])
+  @@index([type])
+}
+
+model Payment {
+  id              String    @id @default(cuid())
+  purchaseOrderId String
+  payee           String    @default("SUPPLIER")
+  payeeUserId     String?
+  type            String
+  description     String?
+  amount          Float
+  currency        String    @default("RM")
+  dueDate         DateTime
+  status          String    @default("PENDING")
+  paidDate        DateTime?
+  invoiceRef      String?
+  notes           String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  paymentSlips  PaymentSlip[]
+
+  @@index([purchaseOrderId])
+  @@index([payee])
+  @@index([payeeUserId])
+  @@index([status])
+  @@index([dueDate])
+}
+
+model PaymentSlip {
+  id           String   @id @default(cuid())
+  paymentId    String
+  fileName     String
+  fileData     Bytes
+  fileSize     Int
+  mimeType     String
+  uploadedById String
+  notes        String?
+  createdAt    DateTime @default(now())
+
+  payment    Payment @relation(fields: [paymentId], references: [id])
+  uploadedBy User    @relation(fields: [uploadedById], references: [id])
+
+  @@index([paymentId])
+}
+
+// Marketplace integration tokens (OAuth access + refresh)
+model IntegrationToken {
+  id            String   @id @default(cuid())
+  provider      String   @unique // SHOPEE, TIKTOK, LAZADA, AUTOCOUNT
+  accessToken   String
+  refreshToken  String?
+  shopId        String?  // Shopee shop_id, Lazada seller_id, etc.
+  shopName      String?
+  extra         String?  // JSON blob for provider-specific data
+  expiresAt     DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([provider])
+}
+
+// In-app notifications
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String   // PO_SENT, PO_APPROVED, PO_REJECTED, ETA_CHANGED, ETA_REQUEST, PAYMENT_DUE, PAYMENT_PAID, DOC_UPLOADED, SHIPMENT_UPDATE
+  title     String
+  message   String
+  link      String?  // URL to navigate to
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, isRead])
+  @@index([createdAt])
+}
