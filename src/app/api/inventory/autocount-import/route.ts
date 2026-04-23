@@ -157,32 +157,39 @@ export async function POST(req: NextRequest) {
       aggregated[key].revenue += rev;
     }
 
+    // Batch upsert via raw SQL (single round-trip instead of N round-trips)
+    const aggregatedList = Object.values(aggregated);
     let salesRecords = 0;
-    for (const data of Object.values(aggregated)) {
-      await prisma.monthlySales.upsert({
-        where: {
-          productId_year_month_channel: {
-            productId: data.productId,
-            year: data.year,
-            month: data.month,
-            channel: "AUTOCOUNT",
-          },
-        },
-        update: {
-          unitsSold: data.units,
-          revenue: Math.round(data.revenue * 100) / 100,
-        },
-        create: {
-          productId: data.productId,
-          year: data.year,
-          month: data.month,
-          channel: "AUTOCOUNT",
-          unitsSold: data.units,
-          revenue: Math.round(data.revenue * 100) / 100,
-          enteredBy: user.id,
-        },
-      });
-      salesRecords++;
+    if (aggregatedList.length > 0) {
+      // Build a single multi-row INSERT ... ON CONFLICT DO UPDATE
+      // Uses SQLite's UPSERT syntax (supported by Turso/libsql)
+      const now = new Date().toISOString();
+      const valueChunks: string[] = [];
+      const params: any[] = [];
+      for (const d of aggregatedList) {
+        const id = `cm${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+        valueChunks.push("(?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        params.push(
+          id,
+          d.productId,
+          d.year,
+          d.month,
+          "AUTOCOUNT",
+          d.units,
+          Math.round(d.revenue * 100) / 100,
+          user.id,
+          now
+        );
+      }
+      const sql = `
+        INSERT INTO MonthlySales (id, productId, year, month, channel, unitsSold, revenue, enteredBy, createdAt)
+        VALUES ${valueChunks.join(",")}
+        ON CONFLICT (productId, year, month, channel) DO UPDATE SET
+          unitsSold = excluded.unitsSold,
+          revenue = excluded.revenue
+      `;
+      await prisma.$executeRawUnsafe(sql, ...params);
+      salesRecords = aggregatedList.length;
     }
 
     return NextResponse.json({
