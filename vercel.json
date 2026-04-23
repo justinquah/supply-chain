@@ -1,0 +1,19 @@
+{
+  "functions": {
+    "src/app/api/inventory/qianyi-orders-import/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/inventory/autocount-import/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/inventory/qianyi-import/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/inventory/sales/import/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/purchase-orders/import/route.ts": {
+      "maxDuration": 60
+    }
+  }
+}

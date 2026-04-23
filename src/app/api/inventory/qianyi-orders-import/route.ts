@@ -74,6 +74,19 @@ export async function POST(req: NextRequest) {
     let matched = 0;
     const unmatchedSkus: Set<string> = new Set();
 
+    // Pre-load all products into memory for fast O(1) lookup
+    const allProducts = await prisma.product.findMany({
+      select: { id: true, sku: true, sellerSku: true, barcode: true },
+    });
+    const productBySku = new Map<string, string>();
+    const productBySellerSku = new Map<string, string>();
+    const productByBarcode = new Map<string, string>();
+    for (const p of allProducts) {
+      if (p.sku) productBySku.set(p.sku, p.id);
+      if (p.sellerSku) productBySellerSku.set(p.sellerSku, p.id);
+      if (p.barcode) productByBarcode.set(p.barcode, p.id);
+    }
+
     // Aggregate: productId-year-month-channel → { units, revenue }
     const aggregated: Record<
       string,
@@ -127,19 +140,13 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
-      // Match product by sku, sellerSku, or barcode
-      const product = await prisma.product.findFirst({
-        where: {
-          OR: [
-            { sku: lookupSku },
-            { sellerSku: lookupSku },
-            { barcode: lookupSku },
-          ],
-        },
-        select: { id: true },
-      });
+      // Match product from pre-loaded maps (fast, in-memory)
+      let productId =
+        productBySku.get(lookupSku) ||
+        productBySellerSku.get(lookupSku) ||
+        productByBarcode.get(lookupSku);
 
-      if (!product) {
+      if (!productId) {
         unmatched++;
         unmatchedSkus.add(lookupSku);
         continue;
@@ -151,10 +158,10 @@ export async function POST(req: NextRequest) {
 
       if (qty <= 0) continue;
 
-      const key = `${product.id}-${year}-${month}-${channel}`;
+      const key = `${productId}-${year}-${month}-${channel}`;
       if (!aggregated[key]) {
         aggregated[key] = {
-          productId: product.id,
+          productId,
           year,
           month,
           channel,

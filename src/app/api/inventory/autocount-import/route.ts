@@ -60,8 +60,20 @@ export async function POST(req: NextRequest) {
     > = {};
 
     function excelSerialToDate(serial: number): Date {
-      // Excel stores dates as days since 1900-01-00 (with leap year bug)
       return new Date((serial - 25569) * 86400 * 1000);
+    }
+
+    // Pre-load all products into memory for fast lookup
+    const allProducts = await prisma.product.findMany({
+      select: { id: true, sku: true, sellerSku: true, barcode: true },
+    });
+    const productBySku = new Map<string, string>();
+    const productBySellerSku = new Map<string, string>();
+    const productByBarcode = new Map<string, string>();
+    for (const p of allProducts) {
+      if (p.sku) productBySku.set(p.sku, p.id);
+      if (p.sellerSku) productBySellerSku.set(p.sellerSku, p.id);
+      if (p.barcode) productByBarcode.set(p.barcode, p.id);
     }
 
     for (const row of rows) {
@@ -110,20 +122,16 @@ export async function POST(req: NextRequest) {
       const year = docDate.getFullYear();
       const month = docDate.getMonth() + 1;
 
-      // Match product
-      const orClauses: any[] = [];
+      // Match product from pre-loaded maps (fast, in-memory)
+      let productId: string | undefined;
       if (lookupSku) {
-        orClauses.push({ sku: lookupSku });
-        orClauses.push({ sellerSku: lookupSku });
+        productId = productBySku.get(lookupSku) || productBySellerSku.get(lookupSku);
       }
-      if (lookupBarcode) orClauses.push({ barcode: lookupBarcode });
+      if (!productId && lookupBarcode) {
+        productId = productByBarcode.get(lookupBarcode);
+      }
 
-      const product = await prisma.product.findFirst({
-        where: { OR: orClauses },
-        select: { id: true },
-      });
-
-      if (!product) {
+      if (!productId) {
         unmatched++;
         if (lookupSku) unmatchedSkus.add(lookupSku);
         continue;
@@ -135,10 +143,10 @@ export async function POST(req: NextRequest) {
 
       if (qty <= 0) continue;
 
-      const key = `${product.id}-${year}-${month}`;
+      const key = `${productId}-${year}-${month}`;
       if (!aggregated[key]) {
         aggregated[key] = {
-          productId: product.id,
+          productId,
           year,
           month,
           units: 0,
