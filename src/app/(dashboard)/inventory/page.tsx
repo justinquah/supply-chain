@@ -86,12 +86,18 @@ export default function InventoryPage() {
             Stock levels, demand forecast, and risk assessment
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <a href="/inventory/qianyi-import">
-            <Button variant="outline">Import from Qianyi</Button>
+            <Button variant="outline" size="sm">Stock: Qianyi Inventory</Button>
+          </a>
+          <a href="/inventory/qianyi-orders-import">
+            <Button variant="outline" size="sm">Sales: Qianyi Orders (Online)</Button>
+          </a>
+          <a href="/inventory/autocount-import">
+            <Button variant="outline" size="sm">Sales: AutoCount (Offline)</Button>
           </a>
           <a href="/inventory/import">
-            <Button variant="outline">Import Sales Data</Button>
+            <Button variant="outline" size="sm">Sales: Generic CSV/Excel</Button>
           </a>
         </div>
       </div>

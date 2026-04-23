@@ -69,6 +69,7 @@ model Product {
   sellerSku       String?  @unique // Marketplace seller SKU (if different from ERP code)
   barcode         String?  @unique // 13-digit retail barcode
   name            String
+  brand           String?  @default("JJANGX3") // Product brand (JJANGX3, etc.)
   seriesId        String?  // Links to ProductSeries if part of a variation group
   variationName   String?  // e.g. "Fresh Tuna", "Coffee", "5L Lemon"
   categoryId      String
