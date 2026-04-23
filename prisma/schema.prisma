@@ -41,18 +41,40 @@ model ProductCategory {
   defaultTargetTurnover Float     @default(6)
   isActive              Boolean   @default(true)
   products              Product[]
+  series                ProductSeries[]
+}
+
+// A Series groups variations of the same core product
+// e.g. "Premium Wet Cat Food 400g" series has 5 flavors (variations)
+model ProductSeries {
+  id           String   @id @default(cuid())
+  name         String   @unique // "JJANGX3 Premium Wet Cat Food 400g"
+  categoryId   String
+  brand        String?  @default("JJANGX3")
+  packSize     String?  // "400G X 24"
+  description  String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  category ProductCategory @relation(fields: [categoryId], references: [id])
+  products Product[]
+
+  @@index([categoryId])
 }
 
 model Product {
   id              String   @id @default(cuid())
-  sku             String   @unique
-  sellerSku       String?  @unique // Seller SKU (marketplace SKU)
-  barcode         String?
+  sku             String   @unique // ERP code (e.g. BC-PF-CAN-TUNA-400G)
+  sellerSku       String?  @unique // Marketplace seller SKU (if different from ERP code)
+  barcode         String?  @unique // 13-digit retail barcode
   name            String
+  seriesId        String?  // Links to ProductSeries if part of a variation group
+  variationName   String?  // e.g. "Fresh Tuna", "Coffee", "5L Lemon"
   categoryId      String
-  supplierId      String   // Default/primary supplier
-  unitCost        Float    // Default cost (from primary supplier)
-  sellingPrice    Float?
+  supplierId      String
+  unitCost        Float    // Wholesale/cost price
+  sellingPrice    Float?   // Recommended retail price
   weightPerUnit   Float
   volumePerUnit   Float
   unitsPerCarton  Int      @default(1)
@@ -65,15 +87,17 @@ model Product {
   updatedAt       DateTime @updatedAt
 
   category          ProductCategory     @relation(fields: [categoryId], references: [id])
+  series            ProductSeries?      @relation(fields: [seriesId], references: [id])
   supplier          User                @relation(fields: [supplierId], references: [id])
-  suppliers         ProductSupplier[]   // All suppliers who can provide this product
+  suppliers         ProductSupplier[]
   monthlySales      MonthlySales[]
   poLineItems       POLineItem[]
   stockAvailability StockAvailability[]
   promoProducts     PromoProduct[]
-  mappingComponents SkuMappingComponent[] // Bundles/variants that contain this base product
+  mappingComponents SkuMappingComponent[]
 
   @@index([categoryId])
+  @@index([seriesId])
   @@index([supplierId])
   @@index([sku])
   @@index([sellerSku])
