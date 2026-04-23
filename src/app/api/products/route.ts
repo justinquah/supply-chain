@@ -37,9 +37,14 @@ export async function GET(req: NextRequest) {
     where,
     include: {
       category: { select: { id: true, name: true } },
+      series: { select: { id: true, name: true, packSize: true } },
       supplier: { select: { id: true, name: true, companyName: true } },
     },
-    orderBy: { name: "asc" },
+    orderBy: [
+      { series: { name: "asc" } },
+      { variationName: "asc" },
+      { name: "asc" },
+    ],
   });
 
   return NextResponse.json(products);
