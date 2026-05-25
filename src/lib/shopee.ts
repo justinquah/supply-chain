@@ -1,362 +1,232 @@
 import crypto from "crypto";
-import { getIntegrationToken } from "./integration-tokens";
+import { createClient } from "@/lib/supabase/server";
 
-// Shopee Open API endpoints
-// Test Account-Sandbox v2: openplatform.sandbox.test-stable.shopee.cn
-// Live: partner.shopeemobile.com (regional) / openplatform.shopee.cn
+// Sandbox vs live is controlled by SHOPEE_ENVIRONMENT. Going live = change env + re-auth.
 const SHOPEE_URLS = {
   live: "https://partner.shopeemobile.com",
   sandbox: "https://openplatform.sandbox.test-stable.shopee.cn",
 };
 
-type ShopeeConfig = {
-  partnerId: string;
-  partnerKey: string;
-  environment: "live" | "sandbox";
-  accessToken?: string;
-  shopId?: string;
-};
-
-function getConfig(): ShopeeConfig {
+function env() {
   return {
     partnerId: process.env.SHOPEE_PARTNER_ID || "",
     partnerKey: process.env.SHOPEE_PARTNER_KEY || "",
     environment: (process.env.SHOPEE_ENVIRONMENT as "live" | "sandbox") || "sandbox",
-    accessToken: process.env.SHOPEE_ACCESS_TOKEN || "",
-    shopId: process.env.SHOPEE_SHOP_ID || "",
   };
 }
 
-/**
- * Load config including tokens from DB (falls back to env vars)
- */
-async function loadConfig(): Promise<ShopeeConfig> {
-  const base = getConfig();
-  const dbToken = await getIntegrationToken("SHOPEE");
-  return {
-    ...base,
-    accessToken: dbToken.accessToken || base.accessToken,
-    shopId: dbToken.shopId || base.shopId,
-  };
+function baseUrl() {
+  return SHOPEE_URLS[env().environment] || SHOPEE_URLS.sandbox;
 }
 
-function getBaseUrl(config: ShopeeConfig): string {
-  return SHOPEE_URLS[config.environment] || SHOPEE_URLS.sandbox;
-}
-
-/**
- * Generate Shopee API signature
- *
- * Shop-level APIs: HMAC-SHA256(partner_key, partner_id + api_path + timestamp + access_token + shop_id)
- * Merchant-level APIs: similar but with merchant_id instead of shop_id
- * Public APIs: HMAC-SHA256(partner_key, partner_id + api_path + timestamp)
- *
- * Docs: https://open.shopee.com/documents/v2/OpenAPI%202.0%20Overview?module=87&type=2
- */
-function generateSignature(
+function sign(
   apiPath: string,
   timestamp: number,
-  partnerId: string,
-  partnerKey: string,
-  accessToken?: string,
-  shopId?: string
+  opts: { accessToken?: string; shopId?: string } = {}
 ): string {
-  let baseString = `${partnerId}${apiPath}${timestamp}`;
-
-  if (accessToken && shopId) {
-    baseString += `${accessToken}${shopId}`;
-  } else if (accessToken) {
-    baseString += `${accessToken}`;
-  }
-
-  return crypto
-    .createHmac("sha256", partnerKey)
-    .update(baseString)
-    .digest("hex");
+  const { partnerId, partnerKey } = env();
+  let base = `${partnerId}${apiPath}${timestamp}`;
+  if (opts.accessToken && opts.shopId) base += `${opts.accessToken}${opts.shopId}`;
+  else if (opts.accessToken) base += `${opts.accessToken}`;
+  return crypto.createHmac("sha256", partnerKey).update(base).digest("hex");
 }
 
-/**
- * Make a request to Shopee API
- */
-export async function shopeeRequest(
-  method: "GET" | "POST",
-  apiPath: string,
-  queryParams: Record<string, string | number> = {},
-  body: any = null,
-  options: {
-    useAccessToken?: boolean; // Default true
-    useShopId?: boolean; // Default true
-  } = {},
-  config?: Partial<ShopeeConfig>
-): Promise<any> {
-  const loaded = await loadConfig();
-  const cfg = { ...loaded, ...config };
-  const { useAccessToken = true, useShopId = true } = options;
+// ---------- token storage (Supabase) ----------
+export type ShopeeTokens = {
+  access_token: string | null;
+  refresh_token: string | null;
+  shop_id: string | null;
+  shop_name: string | null;
+  expires_at: string | null;
+  environment: string | null;
+};
 
-  if (!cfg.partnerId || !cfg.partnerKey) {
-    throw new Error("Shopee API credentials not configured");
-  }
+export async function getShopeeTokens(): Promise<ShopeeTokens | null> {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("integration_tokens")
+    .select("access_token, refresh_token, shop_id, shop_name, expires_at, environment")
+    .eq("provider", "SHOPEE")
+    .maybeSingle();
+  return data ?? null;
+}
 
-  const timestamp = Math.floor(Date.now() / 1000);
-
-  const needAccessToken = useAccessToken && cfg.accessToken;
-  const needShopId = useShopId && cfg.shopId;
-
-  const sign = generateSignature(
-    apiPath,
-    timestamp,
-    cfg.partnerId,
-    cfg.partnerKey,
-    needAccessToken ? cfg.accessToken : undefined,
-    needShopId ? cfg.shopId : undefined
-  );
-
-  const urlParams: Record<string, string> = {
-    partner_id: cfg.partnerId,
-    timestamp: String(timestamp),
-    sign,
-    ...Object.fromEntries(Object.entries(queryParams).map(([k, v]) => [k, String(v)])),
-  };
-
-  if (needAccessToken) urlParams.access_token = cfg.accessToken!;
-  if (needShopId) urlParams.shop_id = cfg.shopId!;
-
-  const url = new URL(apiPath, getBaseUrl(cfg));
-  for (const [key, value] of Object.entries(urlParams)) {
-    url.searchParams.set(key, value);
-  }
-
-  const response = await fetch(url.toString(), {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: body ? JSON.stringify(body) : undefined,
+async function saveShopeeTokens(t: {
+  access_token: string;
+  refresh_token: string;
+  shop_id: string;
+  expires_in: number;
+  shop_name?: string;
+}) {
+  const supabase = await createClient();
+  const expiresAt = new Date(Date.now() + (t.expires_in - 120) * 1000).toISOString();
+  await supabase.from("integration_tokens").upsert({
+    provider: "SHOPEE",
+    access_token: t.access_token,
+    refresh_token: t.refresh_token,
+    shop_id: t.shop_id,
+    shop_name: t.shop_name ?? null,
+    environment: env().environment,
+    expires_at: expiresAt,
+    updated_at: new Date().toISOString(),
   });
-
-  const data = await response.json();
-
-  if (data.error) {
-    console.error("Shopee API error:", data);
-    throw new Error(
-      `Shopee API error: ${data.error} - ${data.message || data.msg || "Unknown error"}`
-    );
-  }
-
-  return data;
 }
 
-// ============ AUTH ============
-
-/**
- * Generate OAuth authorization URL for seller
- */
+// ---------- OAuth ----------
 export function getAuthorizationUrl(redirectUri: string): string {
-  const config = getConfig();
-  const timestamp = Math.floor(Date.now() / 1000);
+  const { partnerId } = env();
   const apiPath = "/api/v2/shop/auth_partner";
-
-  const sign = generateSignature(
-    apiPath,
-    timestamp,
-    config.partnerId,
-    config.partnerKey
-  );
-
-  const url = new URL(apiPath, getBaseUrl(config));
-  url.searchParams.set("partner_id", config.partnerId);
-  url.searchParams.set("timestamp", String(timestamp));
-  url.searchParams.set("sign", sign);
+  const ts = Math.floor(Date.now() / 1000);
+  const s = sign(apiPath, ts);
+  const url = new URL(apiPath, baseUrl());
+  url.searchParams.set("partner_id", partnerId);
+  url.searchParams.set("timestamp", String(ts));
+  url.searchParams.set("sign", s);
   url.searchParams.set("redirect", redirectUri);
-
   return url.toString();
 }
 
-/**
- * Exchange authorization code for access token
- */
-export async function getAccessToken(code: string, shopId: string): Promise<{
-  access_token: string;
-  refresh_token: string;
-  expire_in: number;
-}> {
-  const config = getConfig();
+export async function exchangeCodeForToken(code: string, shopId: string) {
+  const { partnerId } = env();
   const apiPath = "/api/v2/auth/token/get";
-  const timestamp = Math.floor(Date.now() / 1000);
+  const ts = Math.floor(Date.now() / 1000);
+  const s = sign(apiPath, ts);
+  const url = new URL(apiPath, baseUrl());
+  url.searchParams.set("partner_id", partnerId);
+  url.searchParams.set("timestamp", String(ts));
+  url.searchParams.set("sign", s);
 
-  const sign = generateSignature(
-    apiPath,
-    timestamp,
-    config.partnerId,
-    config.partnerKey
-  );
-
-  const url = new URL(apiPath, getBaseUrl(config));
-  url.searchParams.set("partner_id", config.partnerId);
-  url.searchParams.set("timestamp", String(timestamp));
-  url.searchParams.set("sign", sign);
-
-  const response = await fetch(url.toString(), {
+  const res = await fetch(url.toString(), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       code,
-      partner_id: parseInt(config.partnerId),
+      partner_id: parseInt(partnerId),
       shop_id: parseInt(shopId),
     }),
   });
-
-  const data = await response.json();
-
-  if (data.error) {
-    throw new Error(`Shopee auth error: ${data.error} - ${data.message}`);
-  }
-
+  const data = await res.json();
+  if (data.error) throw new Error(`${data.error}: ${data.message}`);
+  await saveShopeeTokens({
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    shop_id: shopId,
+    expires_in: data.expire_in,
+  });
   return data;
 }
 
-/**
- * Refresh expired access token
- */
-export async function refreshAccessToken(
-  refreshToken: string,
-  shopId: string
-): Promise<any> {
-  const config = getConfig();
+async function refreshToken(refresh: string, shopId: string) {
+  const { partnerId } = env();
   const apiPath = "/api/v2/auth/access_token/get";
-  const timestamp = Math.floor(Date.now() / 1000);
+  const ts = Math.floor(Date.now() / 1000);
+  const s = sign(apiPath, ts);
+  const url = new URL(apiPath, baseUrl());
+  url.searchParams.set("partner_id", partnerId);
+  url.searchParams.set("timestamp", String(ts));
+  url.searchParams.set("sign", s);
 
-  const sign = generateSignature(
-    apiPath,
-    timestamp,
-    config.partnerId,
-    config.partnerKey
-  );
-
-  const url = new URL(apiPath, getBaseUrl(config));
-  url.searchParams.set("partner_id", config.partnerId);
-  url.searchParams.set("timestamp", String(timestamp));
-  url.searchParams.set("sign", sign);
-
-  const response = await fetch(url.toString(), {
+  const res = await fetch(url.toString(), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      refresh_token: refreshToken,
+      refresh_token: refresh,
       shop_id: parseInt(shopId),
-      partner_id: parseInt(config.partnerId),
+      partner_id: parseInt(partnerId),
     }),
   });
-
-  return response.json();
-}
-
-// ============ SHOP INFO ============
-
-/**
- * Get shop profile info
- */
-export async function getShopInfo(): Promise<any> {
-  return shopeeRequest("GET", "/api/v2/shop/get_shop_info");
-}
-
-// ============ ORDERS ============
-
-/**
- * Get order list
- * time_range_field: create_time or update_time
- */
-export async function getOrderList(params: {
-  time_range_field?: "create_time" | "update_time";
-  time_from: number; // Unix timestamp
-  time_to: number;
-  page_size?: number;
-  cursor?: string;
-  order_status?: string; // UNPAID, READY_TO_SHIP, PROCESSED, SHIPPED, COMPLETED, IN_CANCEL, CANCELLED, INVOICE_PENDING
-}): Promise<any> {
-  return shopeeRequest("GET", "/api/v2/order/get_order_list", {
-    time_range_field: params.time_range_field || "create_time",
-    time_from: params.time_from,
-    time_to: params.time_to,
-    page_size: params.page_size || 50,
-    cursor: params.cursor || "",
-    order_status: params.order_status || "COMPLETED",
+  const data = await res.json();
+  if (data.error) throw new Error(`${data.error}: ${data.message}`);
+  await saveShopeeTokens({
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    shop_id: shopId,
+    expires_in: data.expire_in,
   });
+  return data.access_token as string;
 }
 
-/**
- * Get order detail (up to 50 orders at once)
- */
-export async function getOrderDetail(
-  orderSnList: string[],
-  responseFields?: string[]
-): Promise<any> {
-  return shopeeRequest("GET", "/api/v2/order/get_order_detail", {
-    order_sn_list: orderSnList.join(","),
-    response_optional_fields: (
-      responseFields || ["item_list", "total_amount", "create_time"]
-    ).join(","),
-  });
+// Returns a valid access token, refreshing if expired. Throws if not connected.
+async function getValidToken(): Promise<{ accessToken: string; shopId: string }> {
+  const tokens = await getShopeeTokens();
+  if (!tokens?.shop_id || !tokens.refresh_token)
+    throw new Error("Shopee not connected — authorize the shop first.");
+
+  const expired =
+    !tokens.access_token ||
+    !tokens.expires_at ||
+    new Date(tokens.expires_at).getTime() < Date.now();
+
+  if (expired) {
+    const newToken = await refreshToken(tokens.refresh_token, tokens.shop_id);
+    return { accessToken: newToken, shopId: tokens.shop_id };
+  }
+  return { accessToken: tokens.access_token!, shopId: tokens.shop_id };
 }
 
-// ============ PRODUCTS ============
-
-/**
- * Get item list (product list)
- */
-export async function getItemList(params: {
-  offset?: number;
-  page_size?: number;
-  item_status?: string; // NORMAL, BANNED, DELETED, UNLIST
-  update_time_from?: number;
-  update_time_to?: number;
-}): Promise<any> {
-  return shopeeRequest("GET", "/api/v2/product/get_item_list", {
-    offset: params.offset || 0,
-    page_size: params.page_size || 50,
-    item_status: params.item_status || "NORMAL",
-    ...(params.update_time_from && { update_time_from: params.update_time_from }),
-    ...(params.update_time_to && { update_time_to: params.update_time_to }),
+// ---------- shop API ----------
+async function shopGet(apiPath: string, params: Record<string, string | number> = {}) {
+  const { partnerId } = env();
+  const { accessToken, shopId } = await getValidToken();
+  const ts = Math.floor(Date.now() / 1000);
+  const s = sign(apiPath, ts, { accessToken, shopId });
+  const usp = new URLSearchParams({
+    partner_id: partnerId,
+    timestamp: String(ts),
+    sign: s,
+    access_token: accessToken,
+    shop_id: shopId,
+    ...Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
   });
+  const res = await fetch(`${baseUrl()}${apiPath}?${usp}`, {
+    headers: { "Content-Type": "application/json" },
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(`${data.error}: ${data.message || data.msg}`);
+  return data;
 }
 
-/**
- * Get item base info (by item IDs)
- */
-export async function getItemBaseInfo(itemIds: number[]): Promise<any> {
-  return shopeeRequest("GET", "/api/v2/product/get_item_base_info", {
-    item_id_list: itemIds.join(","),
-  });
-}
+// ---------- high-level sync ----------
+export type ShopeeStockItem = {
+  itemId: number;
+  sku: string | null;
+  name: string;
+  stock: number;
+};
 
-// ============ STOCK/INVENTORY ============
+export async function fetchShopeeStock(): Promise<ShopeeStockItem[]> {
+  const all: ShopeeStockItem[] = [];
+  let offset = 0;
+  const pageSize = 50;
 
-/**
- * Get stock info for items
- */
-export async function getItemsStock(itemIds: number[]): Promise<any> {
-  return shopeeRequest("GET", "/api/v2/product/get_item_list_by_page", {
-    item_id_list: itemIds.join(","),
-  });
-}
+  for (let guard = 0; guard < 50; guard++) {
+    const list = await shopGet("/api/v2/product/get_item_list", {
+      offset,
+      page_size: pageSize,
+      item_status: "NORMAL",
+    });
+    const items = list.response?.item || [];
+    if (items.length === 0) break;
 
-// ============ LOGISTICS ============
-
-/**
- * Get shipping parameter info
- */
-export async function getShippingParameter(orderSn: string): Promise<any> {
-  return shopeeRequest("GET", "/api/v2/logistics/get_shipping_parameter", {
-    order_sn: orderSn,
-  });
-}
-
-// ============ PUBLIC API ============
-
-/**
- * Get list of authorized shops for this app
- */
-export async function getShopsByPartner(): Promise<any> {
-  return shopeeRequest("GET", "/api/v2/public/get_shops_by_partner", {}, null, {
-    useAccessToken: false,
-    useShopId: false,
-  });
+    const ids = items.map((i: any) => i.item_id);
+    // Batch base info (max 50)
+    const info = await shopGet("/api/v2/product/get_item_base_info", {
+      item_id_list: ids.join(","),
+    });
+    for (const it of info.response?.item_list || []) {
+      const stock =
+        it.stock_info_v2?.summary_info?.total_available_stock ??
+        it.stock_info?.[0]?.current_stock ??
+        0;
+      all.push({
+        itemId: it.item_id,
+        sku: it.item_sku || null,
+        name: it.item_name || "",
+        stock: Number(stock) || 0,
+      });
+    }
+    if (!list.response?.has_next_page) break;
+    offset = list.response?.next_offset ?? offset + pageSize;
+  }
+  return all;
 }

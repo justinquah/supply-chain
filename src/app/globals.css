@@ -7,9 +7,13 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-sans: var(--font-heebo), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, monospace;
+  --font-heading: var(--font-heebo), sans-serif;
+  /* JJANGX3 brand tokens */
+  --color-brand: #e12f00;
+  --color-brand-dark: #b82600;
+  --color-brand-ink: #573a29;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -49,24 +53,25 @@
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  /* JJANGX3 — warm off-white base, red-orange primary, brown ink */
+  --background: #faf8f4;
+  --foreground: #2b2018;
+  --card: #ffffff;
+  --card-foreground: #2b2018;
+  --popover: #ffffff;
+  --popover-foreground: #2b2018;
+  --primary: #e12f00;
+  --primary-foreground: #ffffff;
+  --secondary: #f3ede6;
+  --secondary-foreground: #573a29;
+  --muted: #f3ede6;
+  --muted-foreground: #8a7a6d;
+  --accent: #f8e7e0;
+  --accent-foreground: #573a29;
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --border: #e9e1d7;
+  --input: #e9e1d7;
+  --ring: #e12f00;
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);

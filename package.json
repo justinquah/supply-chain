@@ -4,22 +4,17 @@
   "private": true,
   "scripts": {
     "dev": "next dev -H 0.0.0.0",
-    "postinstall": "prisma generate",
     "build": "next build",
     "start": "next start -H 0.0.0.0",
-    "lint": "eslint",
-    "db:migrate": "npx prisma migrate dev",
-    "db:seed": "npx prisma db seed",
-    "db:studio": "npx prisma studio"
-  },
-  "prisma": {
-    "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts"
+    "lint": "eslint"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.0",
     "@libsql/client": "^0.17.2",
     "@prisma/adapter-libsql": "^5.22.0",
     "@prisma/client": "^5.22.0",
+    "@supabase/ssr": "^0.10.3",
+    "@supabase/supabase-js": "^2.105.4",
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -44,6 +39,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.3",
+    "pg": "^8.20.0",
     "tailwindcss": "^4",
     "ts-node": "^10.9.2",
     "typescript": "^5"
