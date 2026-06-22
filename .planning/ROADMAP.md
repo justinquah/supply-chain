@@ -25,11 +25,12 @@ Four phases take JJANGX3's supply chain from the current Supabase rebuild to a 1
   2. A user signs in and is assigned exactly one of SCM / Accounts / Finance / Admin, with pages and actions gated by that role
   3. Admin can create users and assign or change roles
   4. Shopee/marketplace sync and legacy forecasting/optimizer/scheduler code no longer ship in the app
-**Plans**: 2 plans
+**Plans**: 3 plans
 
 Plans:
-- [ ] 01-01: Strip Shopee/marketplace sync + delete legacy forecasting/optimizer/scheduler modules
-- [ ] 01-02: Four-role auth model, role-gated access, and Admin user management
+- [ ] 01-01-PLAN.md — Remove out-of-scope code (Shopee/legacy/projection) + 6 orphaned deps; green build (Wave 1)
+- [ ] 01-02-PLAN.md — Role/cleanup DB migrations (0011 ACCOUNTS+remap+RLS, 0012 drop integration tables) + supabase db push (Wave 2)
+- [ ] 01-03-PLAN.md — Four-role app layer: requireRole gating, Admin user management, /login 500-hardening (Wave 3)
 
 ### Phase 2: KPI Engine & Stock Upload
 **Goal**: Stand up the data backbone — schema migrations, FY helper functions, the weekly stock upload pipeline, and the SQL views that classify and aggregate KPI scores.**Depends on**: Phase 1
@@ -83,7 +84,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation & Roles | 0/2 | Not started | - |
+| 1. Foundation & Roles | 0/3 | Not started | - |
 | 2. KPI Engine & Stock Upload | 0/3 | Not started | - |
 | 3. KPI Dashboard | 0/2 | Not started | - |
 | 4. PO Workflow & Finance | 0/3 | Not started | - |
