@@ -1,2 +1,0 @@
--- AlterTable
-ALTER TABLE "Product" ADD COLUMN "brand" TEXT DEFAULT 'JJANGX3';
