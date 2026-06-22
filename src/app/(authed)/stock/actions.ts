@@ -8,7 +8,7 @@ export async function saveStockLevels(
 ): Promise<{ ok: boolean; saved: number; error?: string }> {
   const profile = await getCurrentUser();
   if (!profile) return { ok: false, saved: 0, error: "Not signed in" };
-  if (!["SUPER_ADMIN", "SCM", "ADMIN"].includes(profile.role)) {
+  if (!(["SCM", "ADMIN"] as string[]).includes(profile.role)) {
     return { ok: false, saved: 0, error: "You don't have permission to edit stock" };
   }
 

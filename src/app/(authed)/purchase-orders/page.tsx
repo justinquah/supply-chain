@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PoForm } from "./po-form";
 import { DocBadges } from "./doc-badge";
 
-const CAN_WRITE = ["SUPER_ADMIN", "SCM", "ADMIN", "FINANCE", "LOGISTICS"];
+const CAN_WRITE = ["SCM", "ACCOUNTS", "ADMIN", "FINANCE"];
 
 function money(n: number | null, cur: string | null) {
   if (n == null) return "—";
@@ -25,10 +25,14 @@ export default async function PurchaseOrdersPage() {
         "id, po_number, invoice_number, invoice_amount, invoice_currency, product_group, created_at, supplier:profiles!supplier_id(name, company_name), po_documents(id, doc_type, file_path, file_name)"
       )
       .order("created_at", { ascending: false }),
+    // Phase-1 substitute: the SUPPLIER role was removed in migration 0011 (all SUPPLIER
+    // rows remapped to ADMIN). Populate the supplier dropdown with any profile that has
+    // a company_name — these are the actual supplier contacts in the system.
+    // TODO Phase 4: redesign the PO supplier model (brief says suppliers operate off-app).
     supabase
       .from("profiles")
       .select("id, name, company_name")
-      .eq("role", "SUPPLIER")
+      .not("company_name", "is", null)
       .order("company_name"),
     supabase.from("product_groups").select("name").order("name"),
   ]);

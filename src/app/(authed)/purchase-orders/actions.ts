@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient, getCurrentUser } from "@/lib/supabase/server";
 
-const CAN_WRITE = ["SUPER_ADMIN", "SCM", "ADMIN", "FINANCE", "LOGISTICS"];
+const CAN_WRITE = ["SCM", "ACCOUNTS", "ADMIN", "FINANCE"];
 
 // doc_type -> storage bucket
 const BUCKET: Record<string, string> = {

@@ -1,10 +1,11 @@
-import { createClient, getCurrentUser } from "@/lib/supabase/server";
+import { createClient, requireRole } from "@/lib/supabase/server";
 import { StockForm } from "./stock-form";
 
 export default async function StockPage() {
   const supabase = await createClient();
-  const profile = await getCurrentUser();
-  const canEdit = ["SUPER_ADMIN", "SCM", "ADMIN"].includes(profile?.role ?? "");
+  // Gate to SCM and ADMIN only; other roles are redirected to /login.
+  const profile = await requireRole("SCM", "ADMIN");
+  const canEdit = true; // requireRole guarantees the role is SCM or ADMIN
 
   const { data: dash } = await supabase
     .from("product_dashboard")
