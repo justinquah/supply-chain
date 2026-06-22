@@ -20,6 +20,9 @@ It does NOT touch KPI logic, stock upload, dashboard, or the PO/finance workflow
 - **D-03:** Change the `profiles.role` default away from `'GENERAL'` — new users get an explicit role at invite time (no silent default). The `handle_new_user` trigger reads role from `raw_user_meta_data`; keep that path, drop the `GENERAL` fallback.
 - **D-04:** Fix the stale app-layer enum in `src/types/index.ts` (currently `["ADMIN","FINANCE","SUPPLIER","LOGISTICS"]`) to the four canonical roles.
 
+### Role Model — Amendment (2026-06-22, post-plan scope change)
+- **D-13:** A **5th role, WAREHOUSE**, was added back after planning (user realized warehouse staff need access). Overrides the brief's "exactly 4 roles" lock → now **SCM, ACCOUNTS, FINANCE, ADMIN, WAREHOUSE**. Folded into Phase 1 before the migrations were pushed: `0011` no longer remaps WAREHOUSE rows to ADMIN, and WAREHOUSE was added to the app role model (`appRoleSchema`, `ROLES`/`ROLE_LABELS`, `AppRole`, layout labels). WAREHOUSE's data grants (RLS) + receiving UI are **deferred to Phase 4**. New requirements WHS-01..04 (goods receipt qty/damage remark + proof, WAREHOUSE marks RECEIVED, ETA notify, container arrived/unload timing — one PO = one container) live in Phase 4.
+
 ### Auth & Gating
 - **D-05:** Auth mechanism is **Supabase Auth** (already in place: `auth.users` + `public.profiles`, `getCurrentUser()` in `src/lib/supabase/server.ts`, `(authed)/layout.tsx` redirect-to-`/login`). No new auth system. `next-auth` is to be removed (see D-09).
 - **D-06:** Centralize role gating. Replace the scattered inline arrays (e.g. `["SUPER_ADMIN","SCM","ADMIN"]` in settings/stock/purchase-orders pages & actions) with a single server-side `requireRole(...roles)` helper that builds on `getCurrentUser()`. Purge all references to dead roles (SUPER_ADMIN, LOGISTICS, etc.) from these call sites.

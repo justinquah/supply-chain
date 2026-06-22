@@ -15,8 +15,8 @@ Requirements for the 1 July 2026 go-live. Each maps to a roadmap phase.
 
 ### Auth & Roles
 
-- [ ] **AUTH-01**: A user can sign in and is assigned exactly one of four roles (SCM, Accounts, Finance, Admin) — migration 0011 written, not yet applied (`supabase db push` pending)
-- [ ] **AUTH-02**: Access to pages and actions is gated by role (SCM, Accounts, Finance, Admin scopes per the brief)
+- [ ] **AUTH-01**: A user can sign in and is assigned exactly one of five roles (SCM, Accounts, Finance, Admin, Warehouse) — migration 0011 written, not yet applied (`supabase db push` pending)
+- [ ] **AUTH-02**: Access to pages and actions is gated by role (SCM, Accounts, Finance, Admin, Warehouse scopes per the brief)
 - [ ] **AUTH-03**: Admin can manage users and assign/change roles
 
 ### Stock Upload
@@ -47,8 +47,15 @@ Requirements for the 1 July 2026 go-live. Each maps to a roadmap phase.
 - [ ] **PO-02**: Accounts can upload the signed PO PDF, set `po_number` and `targeted_eta` → state PO_APPROVED
 - [ ] **PO-03**: SCM can upload the supplier invoice file and key `invoice_amount` + `invoice_number` and confirm payment_terms → state INVOICE_RECEIVED
 - [ ] **PO-04**: SCM can upload BL and K1_FINAL and set `actual_eta` → state SHIPPED
-- [ ] **PO-05**: SCM can mark a PO RECEIVED, gated on BL + K1_FINAL uploaded AND balance == 0
+- [ ] **PO-05**: WAREHOUSE can mark a PO RECEIVED (recording goods-receipt qty/damage — see WHS-01/02), gated on BL + K1_FINAL uploaded AND balance == 0
 - [ ] **PO-06**: PO documents are stored in the correct buckets (po-pdfs, invoices, shipping-docs)
+
+### Warehouse & Goods Receipt
+
+- [ ] **WHS-01**: At goods arrival, WAREHOUSE records quantity received and quantity damaged/short plus a remark against the PO — informational only; does NOT adjust stock figures or KPI snapshots
+- [ ] **WHS-02**: For short/damaged receipts, WAREHOUSE uploads proof (photo/document) stored in Supabase Storage (`receipt-proofs` bucket; may reuse existing `shipment_receipts`/`receipt_photos` tables)
+- [ ] **WHS-03**: WAREHOUSE is notified in-app of an incoming container's ETA (PO `actual_eta`) to prepare to unload
+- [ ] **WHS-04**: The system records the container's arrived-at and unload-completed timestamps on the PO and derives unload duration (one PO = one container)
 
 ### Finance
 
@@ -108,6 +115,10 @@ Deferred — acknowledged but not in the go-live roadmap.
 | PO-04 | Phase 4 | Pending |
 | PO-05 | Phase 4 | Pending |
 | PO-06 | Phase 4 | Pending |
+| WHS-01 | Phase 4 | Pending |
+| WHS-02 | Phase 4 | Pending |
+| WHS-03 | Phase 4 | Pending |
+| WHS-04 | Phase 4 | Pending |
 | FIN-01 | Phase 4 | Pending |
 | FIN-02 | Phase 4 | Pending |
 | FIN-03 | Phase 4 | Pending |
@@ -116,8 +127,8 @@ Deferred — acknowledged but not in the go-live roadmap.
 
 **Coverage:**
 
-- v1 requirements: 30 total
-- Mapped to phases: 30 ✓
+- v1 requirements: 34 total (added WHS-01..04 — Warehouse goods receipt + container tracking, 2026-06-22)
+- Mapped to phases: 34 ✓
 - Unmapped: 0 ✓
 
 ---

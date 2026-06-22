@@ -20,13 +20,13 @@ Four phases take JJANGX3's supply chain from the current Supabase rebuild to a 1
 
 ### Phase 1: Foundation & Roles
 
-**Goal**: Remove all out-of-scope code, establish exactly four role-gated identities, and ensure production serves login cleanly — a clean base for the KPI and PO work.
+**Goal**: Remove all out-of-scope code, establish exactly five role-gated identities, and ensure production serves login cleanly — a clean base for the KPI and PO work.
 **Depends on**: Nothing (first phase)
 **Requirements**: FND-01, FND-02, FND-03, AUTH-01, AUTH-02, AUTH-03
 **Success Criteria** (what must be TRUE):
 
   1. Production URL serves `/login` without a 500 error
-  2. A user signs in and is assigned exactly one of SCM / Accounts / Finance / Admin, with pages and actions gated by that role
+  2. A user signs in and is assigned exactly one of SCM / Accounts / Finance / Admin / Warehouse, with pages and actions gated by that role (WAREHOUSE role exists + is assignable in Phase 1; its dedicated receiving workspace + data grants land in Phase 4)
   3. Admin can create users and assign or change roles
   4. Shopee/marketplace sync and legacy forecasting/optimizer/scheduler code no longer ship in the app
 
@@ -86,24 +86,26 @@ Plans:
 
 ### Phase 4: PO Workflow & Finance
 
-**Goal**: Deliver the full purchase-order lifecycle with its hand-offs, Finance partial payments, document storage, and in-app notifications.
+**Goal**: Deliver the full purchase-order lifecycle with its hand-offs, Finance partial payments, document storage, Warehouse goods receipt + container tracking, and in-app notifications.
 **Depends on**: Phase 3
-**Requirements**: PO-01, PO-02, PO-03, PO-04, PO-05, PO-06, FIN-01, FIN-02, FIN-03, FIN-04, NTF-01
+**Requirements**: PO-01, PO-02, PO-03, PO-04, PO-05, PO-06, WHS-01, WHS-02, WHS-03, WHS-04, FIN-01, FIN-02, FIN-03, FIN-04, NTF-01
 **Success Criteria** (what must be TRUE):
 
-  1. A PO moves DRAFT → PO_APPROVED → INVOICE_RECEIVED → SHIPPED → RECEIVED with the right role acting at each stage
+  1. A PO moves DRAFT → PO_APPROVED → INVOICE_RECEIVED → SHIPPED → RECEIVED with the right role acting at each stage (WAREHOUSE marks RECEIVED)
   2. Marking RECEIVED is gated on BL + K1_FINAL uploaded AND balance == 0
   3. Finance sees POs with `balance_remaining > 0`, records partial payments (amount + slip), and the running balance + `balance_due_by` update; balance == 0 settles the PO
-  4. PO/invoice/shipping/payment documents land in their correct Supabase Storage buckets
-  5. The relevant role is notified in-app (bell) at each hand-off
+  4. PO/invoice/shipping/payment/receipt-proof documents land in their correct Supabase Storage buckets
+  5. The relevant role is notified in-app (bell) at each hand-off, incl. WAREHOUSE on incoming ETA
+  6. At arrival, WAREHOUSE records qty received + damaged/short (remark-only, no stock change) with proof upload for short/damaged; container arrived-at + unload-completed timestamps are captured and unload duration derived (one PO = one container)
 
-**Plans**: 3 plans
+**Plans**: 4 plans
 
 Plans:
 
 - [ ] 04-01: PO state machine + per-stage UIs (draft, approve, invoice, ship, receive) + document storage
 - [ ] 04-02: Finance inbox + partial payments + running balance / balance_due_by
-- [ ] 04-03: In-app notification bell for hand-offs
+- [ ] 04-03: In-app notification bell for hand-offs (incl. WAREHOUSE ETA)
+- [ ] 04-04: Warehouse goods receipt (qty/damage remark + proof, WAREHOUSE marks RECEIVED) + container arrival/unload tracking (WHS-01..04)
 
 ## Progress
 
@@ -115,4 +117,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 1. Foundation & Roles | 1/3 | In Progress (2 staged) |  |
 | 2. KPI Engine & Stock Upload | 0/3 | Not started | - |
 | 3. KPI Dashboard | 0/2 | Not started | - |
-| 4. PO Workflow & Finance | 0/3 | Not started | - |
+| 4. PO Workflow & Finance | 0/4 | Not started | - |
