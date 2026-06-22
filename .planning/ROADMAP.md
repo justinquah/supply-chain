@@ -30,7 +30,7 @@ Four phases take JJANGX3's supply chain from the current Supabase rebuild to a 1
   3. Admin can create users and assign or change roles
   4. Shopee/marketplace sync and legacy forecasting/optimizer/scheduler code no longer ship in the app
 
-**Plans**: 1/3 plans executed
+**Plans**: 2/3 plans executed
 
 Plans:
 **Wave 1**
@@ -39,7 +39,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 01-02-PLAN.md — Role/cleanup DB migrations (0011 ACCOUNTS+remap+RLS, 0012 drop integration tables) + supabase db push (Wave 2)
+- [x] 01-02-PLAN.md — Role/cleanup DB migrations (0011 ACCOUNTS+remap+RLS, 0012 drop integration tables) + supabase db push (Wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -112,7 +112,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation & Roles | 1/3 | In Progress|  |
+| 1. Foundation & Roles | 2/3 | In Progress|  |
 | 2. KPI Engine & Stock Upload | 0/3 | Not started | - |
 | 3. KPI Dashboard | 0/2 | Not started | - |
 | 4. PO Workflow & Finance | 0/3 | Not started | - |
