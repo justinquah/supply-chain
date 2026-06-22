@@ -15,7 +15,7 @@ Requirements for the 1 July 2026 go-live. Each maps to a roadmap phase.
 
 ### Auth & Roles
 
-- [x] **AUTH-01**: A user can sign in and is assigned exactly one of four roles (SCM, Accounts, Finance, Admin)
+- [ ] **AUTH-01**: A user can sign in and is assigned exactly one of four roles (SCM, Accounts, Finance, Admin) — migration 0011 written, not yet applied (`supabase db push` pending)
 - [ ] **AUTH-02**: Access to pages and actions is gated by role (SCM, Accounts, Finance, Admin scopes per the brief)
 - [ ] **AUTH-03**: Admin can manage users and assign/change roles
 
@@ -86,7 +86,7 @@ Deferred — acknowledged but not in the go-live roadmap.
 | FND-01 | Phase 1 | Complete |
 | FND-02 | Phase 1 | Complete |
 | FND-03 | Phase 1 | Pending |
-| AUTH-01 | Phase 1 | Complete |
+| AUTH-01 | Phase 1 | In Progress |
 | AUTH-02 | Phase 1 | Pending |
 | AUTH-03 | Phase 1 | Pending |
 | STK-01 | Phase 2 | Pending |

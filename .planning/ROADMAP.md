@@ -30,20 +30,20 @@ Four phases take JJANGX3's supply chain from the current Supabase rebuild to a 1
   3. Admin can create users and assign or change roles
   4. Shopee/marketplace sync and legacy forecasting/optimizer/scheduler code no longer ship in the app
 
-**Plans**: 2/3 plans executed
+**Plans**: 1/3 complete · 2 staged (await human DB push + Vercel env)
 
 Plans:
 **Wave 1**
 
-- [x] 01-01-PLAN.md — Remove out-of-scope code (Shopee/legacy/projection) + 6 orphaned deps; green build (Wave 1)
+- [x] 01-01-PLAN.md — Remove out-of-scope code (Shopee/legacy/projection) + 6 orphaned deps; green build (Wave 1) ✓ complete
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [x] 01-02-PLAN.md — Role/cleanup DB migrations (0011 ACCOUNTS+remap+RLS, 0012 drop integration tables) + supabase db push (Wave 2)
+- [ ] 01-02-PLAN.md — Role/cleanup DB migrations (0011 ACCOUNTS+remap+RLS, 0012 drop integration tables). ✏️ SQL written + committed; ⏸ awaiting human `supabase db push` (Wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 01-03-PLAN.md — Four-role app layer: requireRole gating, Admin user management, /login 500-hardening (Wave 3)
+- [ ] 01-03-PLAN.md — Four-role app layer: requireRole gating, Admin user management, /login 500-hardening. ✏️ code written + committed (build green); ⏸ awaiting Vercel env + end-to-end verify (Wave 3)
 
 ### Phase 2: KPI Engine & Stock Upload
 
@@ -112,7 +112,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation & Roles | 2/3 | In Progress|  |
+| 1. Foundation & Roles | 1/3 | In Progress (2 staged) |  |
 | 2. KPI Engine & Stock Upload | 0/3 | Not started | - |
 | 3. KPI Dashboard | 0/2 | Not started | - |
 | 4. PO Workflow & Finance | 0/3 | Not started | - |
