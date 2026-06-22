@@ -133,7 +133,7 @@ export default async function DashboardPage({
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle>Inventory health by week</CardTitle>
           <span className="text-xs text-gray-500">
-            Upload stock each Monday · daily Shopee sync later
+            Upload stock each Monday
           </span>
         </CardHeader>
         <CardContent>

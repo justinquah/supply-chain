@@ -9,7 +9,6 @@ const NAV = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/kpi", label: "KPIs" },
   { href: "/sales", label: "Sales" },
-  { href: "/projection", label: "Projection" },
   { href: "/purchase-orders", label: "PO & Invoices" },
   { href: "/products", label: "Products" },
   { href: "/stock", label: "Stock Levels" },

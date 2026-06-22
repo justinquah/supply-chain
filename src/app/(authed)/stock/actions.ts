@@ -28,6 +28,5 @@ export async function saveStockLevels(
 
   revalidatePath("/stock");
   revalidatePath("/dashboard");
-  revalidatePath("/projection");
   return { ok: true, saved: rows.length };
 }

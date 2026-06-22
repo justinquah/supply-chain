@@ -27,9 +27,8 @@ export default async function StockPage() {
         <h1 className="text-2xl font-semibold">Stock Levels</h1>
         <p className="text-sm text-gray-500 mt-1">
           {canEdit
-            ? "Enter current stock per product. Saving records a snapshot used by the dashboard and projection."
+            ? "Enter current stock per product. Saving records a weekly snapshot used by the KPI dashboard."
             : "Current stock per product (view only). Ask a Supply Chain Manager or Admin to update."}
-          {" "}Shopee API sync will replace manual entry later.
         </p>
       </div>
       <StockForm rows={rows} canEdit={canEdit} />
