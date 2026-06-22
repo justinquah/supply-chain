@@ -9,8 +9,8 @@ Requirements for the 1 July 2026 go-live. Each maps to a roadmap phase.
 
 ### Foundation
 
-- [ ] **FND-01**: Existing Shopee/marketplace API sync code is removed from the app
-- [ ] **FND-02**: Legacy demand-forecasting / container-optimizer / payment-scheduler code is deleted
+- [x] **FND-01**: Existing Shopee/marketplace API sync code is removed from the app
+- [x] **FND-02**: Legacy demand-forecasting / container-optimizer / payment-scheduler code is deleted
 - [ ] **FND-03**: Production deploys serve `/login` without a 500 error
 
 ### Auth & Roles
@@ -83,8 +83,8 @@ Deferred — acknowledged but not in the go-live roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FND-01 | Phase 1 | Pending |
-| FND-02 | Phase 1 | Pending |
+| FND-01 | Phase 1 | Complete |
+| FND-02 | Phase 1 | Complete |
 | FND-03 | Phase 1 | Pending |
 | AUTH-01 | Phase 1 | Pending |
 | AUTH-02 | Phase 1 | Pending |
@@ -115,6 +115,7 @@ Deferred — acknowledged but not in the go-live roadmap.
 | NTF-01 | Phase 4 | Pending |
 
 **Coverage:**
+
 - v1 requirements: 30 total
 - Mapped to phases: 30 ✓
 - Unmapped: 0 ✓
