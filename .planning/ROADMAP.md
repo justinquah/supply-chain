@@ -18,9 +18,7 @@ Four phases take JJANGX3's supply chain from the current Supabase rebuild to a 1
 ## Phase Details
 
 ### Phase 1: Foundation & Roles
-**Goal**: Remove all out-of-scope code, establish exactly four role-gated identities, and ensure production serves login cleanly — a clean base for the KPI and PO work.
-**Mode:** mvp
-**Depends on**: Nothing (first phase)
+**Goal**: Remove all out-of-scope code, establish exactly four role-gated identities, and ensure production serves login cleanly — a clean base for the KPI and PO work.**Depends on**: Nothing (first phase)
 **Requirements**: FND-01, FND-02, FND-03, AUTH-01, AUTH-02, AUTH-03
 **Success Criteria** (what must be TRUE):
   1. Production URL serves `/login` without a 500 error
@@ -34,9 +32,7 @@ Plans:
 - [ ] 01-02: Four-role auth model, role-gated access, and Admin user management
 
 ### Phase 2: KPI Engine & Stock Upload
-**Goal**: Stand up the data backbone — schema migrations, FY helper functions, the weekly stock upload pipeline, and the SQL views that classify and aggregate KPI scores.
-**Mode:** mvp
-**Depends on**: Phase 1
+**Goal**: Stand up the data backbone — schema migrations, FY helper functions, the weekly stock upload pipeline, and the SQL views that classify and aggregate KPI scores.**Depends on**: Phase 1
 **Requirements**: STK-01, STK-02, STK-03, STK-04, KPI-01, KPI-02, KPI-03, KPI-04, KPI-05, KPI-06
 **Success Criteria** (what must be TRUE):
   1. SCM uploads a weekly Excel/CSV and sees new `stock_snapshots` rows — one per (product × Monday), `source='WEEKLY_UPLOAD'` — with the raw file retained in the `stock-uploads` bucket
@@ -52,9 +48,7 @@ Plans:
 - [ ] 02-03: KPI classification + aggregation SQL views (`v_weekly_kpi` and roll-ups)
 
 ### Phase 3: KPI Dashboard
-**Goal**: Make the KPI scores visible and explorable — the SCM's primary daily surface.
-**Mode:** mvp
-**Depends on**: Phase 2
+**Goal**: Make the KPI scores visible and explorable — the SCM's primary daily surface.**Depends on**: Phase 2
 **Requirements**: DASH-01, DASH-02, DASH-03
 **Success Criteria** (what must be TRUE):
   1. SCM lands on `/dashboard` showing Overstock %, OOS %, and Healthy % tiles for the current FY/Quarter/Month
@@ -67,9 +61,7 @@ Plans:
 - [ ] 03-02: Tile drill-down to SKU breakdown
 
 ### Phase 4: PO Workflow & Finance
-**Goal**: Deliver the full purchase-order lifecycle with its hand-offs, Finance partial payments, document storage, and in-app notifications.
-**Mode:** mvp
-**Depends on**: Phase 3
+**Goal**: Deliver the full purchase-order lifecycle with its hand-offs, Finance partial payments, document storage, and in-app notifications.**Depends on**: Phase 3
 **Requirements**: PO-01, PO-02, PO-03, PO-04, PO-05, PO-06, FIN-01, FIN-02, FIN-03, FIN-04, NTF-01
 **Success Criteria** (what must be TRUE):
   1. A PO moves DRAFT → PO_APPROVED → INVOICE_RECEIVED → SHIPPED → RECEIVED with the right role acting at each stage
