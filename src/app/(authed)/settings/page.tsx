@@ -1,7 +1,17 @@
-import { getCurrentUser } from "@/lib/supabase/server";
+import { requireRole, createClient } from "@/lib/supabase/server";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { UsersTable } from "./users-table";
 
 export default async function SettingsPage() {
-  const profile = await getCurrentUser();
+  // Gate: only ADMIN can access settings/user-management.
+  await requireRole("ADMIN");
+
+  const supabase = await createClient();
+  const { data: users } = await supabase
+    .from("profiles")
+    .select("id, email, name, role")
+    .eq("is_active", true)
+    .order("name");
 
   return (
     <div className="space-y-6">
@@ -12,15 +22,14 @@ export default async function SettingsPage() {
         </p>
       </div>
 
-      <div className="bg-white rounded-lg border border-gray-200 p-6">
-        <h2 className="text-base font-medium text-gray-900 mb-1">
-          User &amp; Role Management
-        </h2>
-        <p className="text-sm text-gray-500">
-          Admin user management will be available here. Invite users and assign
-          roles (SCM, Accounts, Finance, Admin).
-        </p>
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>User &amp; Role Management</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <UsersTable users={users ?? []} />
+        </CardContent>
+      </Card>
     </div>
   );
 }
