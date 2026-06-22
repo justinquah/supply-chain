@@ -3,6 +3,7 @@ export const ROLES = {
   ACCOUNTS: "ACCOUNTS",
   FINANCE: "FINANCE",
   ADMIN: "ADMIN",
+  WAREHOUSE: "WAREHOUSE",
 } as const;
 
 export const ROLE_LABELS: Record<string, string> = {
@@ -10,6 +11,7 @@ export const ROLE_LABELS: Record<string, string> = {
   ACCOUNTS: "Accounts",
   FINANCE: "Finance",
   ADMIN: "Admin",
+  WAREHOUSE: "Warehouse",
 };
 
 export const PO_STATUSES = {

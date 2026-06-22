@@ -23,9 +23,11 @@ ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'ACCOUNTS';
 -- Step 2: Remap every deprecated-role profile row to ADMIN (D-02)
 -- ============================================================
 -- After this UPDATE, no row in public.profiles carries a deprecated role.
+-- WAREHOUSE is RETAINED (5th role, added back per scope change 2026-06-22): its
+-- rows are left as-is. WAREHOUSE data grants + receiving/container UI land in Phase 4.
 UPDATE public.profiles
   SET role = 'ADMIN'
-  WHERE role IN ('SUPER_ADMIN', 'GENERAL', 'LOGISTICS', 'WAREHOUSE', 'SUPPLIER');
+  WHERE role IN ('SUPER_ADMIN', 'GENERAL', 'LOGISTICS', 'SUPPLIER');
 
 -- ============================================================
 -- Step 3: Drop the GENERAL column default (D-03)
@@ -74,7 +76,9 @@ $$ LANGUAGE SQL STABLE;
 -- Step 6: Rebuild RLS policies — full blast-radius coverage
 -- ============================================================
 -- Each policy is DROPped then re-CREATEd so the definition is clean.
--- Dead roles removed: SUPER_ADMIN, GENERAL, LOGISTICS, WAREHOUSE, SUPPLIER.
+-- Dead roles removed: SUPER_ADMIN, GENERAL, LOGISTICS, SUPPLIER.
+-- WAREHOUSE retained (5th role) — not granted these policies in Phase 1; its
+-- read/write grants for goods-receipt + container tracking are added in Phase 4.
 -- Dead branches removed: SUPPLIER-scoped sub-selects (no SUPPLIER rows remain).
 -- ACCOUNTS added where Phase-4 PO/document access needs it (per Open Question #3).
 --

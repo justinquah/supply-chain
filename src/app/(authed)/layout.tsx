@@ -7,6 +7,7 @@ const ROLE_LABELS: Record<string, string> = {
   ACCOUNTS: "Accounts",
   FINANCE: "Finance",
   ADMIN: "Admin",
+  WAREHOUSE: "Warehouse",
 };
 
 export default async function AuthedLayout({
