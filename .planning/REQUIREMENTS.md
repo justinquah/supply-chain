@@ -81,16 +81,43 @@ Deferred — acknowledged but not in the go-live roadmap.
 
 ## Traceability
 
-Populated during roadmap creation.
-
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (to be filled by roadmap) | | |
+| FND-01 | Phase 1 | Pending |
+| FND-02 | Phase 1 | Pending |
+| FND-03 | Phase 1 | Pending |
+| AUTH-01 | Phase 1 | Pending |
+| AUTH-02 | Phase 1 | Pending |
+| AUTH-03 | Phase 1 | Pending |
+| STK-01 | Phase 2 | Pending |
+| STK-02 | Phase 2 | Pending |
+| STK-03 | Phase 2 | Pending |
+| STK-04 | Phase 2 | Pending |
+| KPI-01 | Phase 2 | Pending |
+| KPI-02 | Phase 2 | Pending |
+| KPI-03 | Phase 2 | Pending |
+| KPI-04 | Phase 2 | Pending |
+| KPI-05 | Phase 2 | Pending |
+| KPI-06 | Phase 2 | Pending |
+| DASH-01 | Phase 3 | Pending |
+| DASH-02 | Phase 3 | Pending |
+| DASH-03 | Phase 3 | Pending |
+| PO-01 | Phase 4 | Pending |
+| PO-02 | Phase 4 | Pending |
+| PO-03 | Phase 4 | Pending |
+| PO-04 | Phase 4 | Pending |
+| PO-05 | Phase 4 | Pending |
+| PO-06 | Phase 4 | Pending |
+| FIN-01 | Phase 4 | Pending |
+| FIN-02 | Phase 4 | Pending |
+| FIN-03 | Phase 4 | Pending |
+| FIN-04 | Phase 4 | Pending |
+| NTF-01 | Phase 4 | Pending |
 
 **Coverage:**
 - v1 requirements: 30 total
-- Mapped to phases: 0 ⚠️ (pending roadmap)
-- Unmapped: 30 ⚠️
+- Mapped to phases: 30 ✓
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-06-22*
