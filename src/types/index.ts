@@ -1,17 +1,21 @@
 import { z } from "zod";
 
+/** The four canonical application roles (mirrors the user_role DB enum post-0011 migration). */
+export const appRoleSchema = z.enum(["SCM", "ACCOUNTS", "FINANCE", "ADMIN"]);
+export type AppRoleEnum = z.infer<typeof appRoleSchema>;
+
 export const createUserSchema = z.object({
   email: z.string().email(),
   password: z.string().min(6, "Password must be at least 6 characters"),
   name: z.string().min(1, "Name is required"),
-  role: z.enum(["ADMIN", "FINANCE", "SUPPLIER", "LOGISTICS"]),
+  role: appRoleSchema,
   companyName: z.string().optional(),
   phone: z.string().optional(),
 });
 
 export const updateUserSchema = z.object({
   name: z.string().min(1).optional(),
-  role: z.enum(["ADMIN", "FINANCE", "SUPPLIER", "LOGISTICS"]).optional(),
+  role: appRoleSchema.optional(),
   companyName: z.string().optional(),
   phone: z.string().optional(),
   isActive: z.boolean().optional(),

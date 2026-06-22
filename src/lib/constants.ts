@@ -1,15 +1,15 @@
 export const ROLES = {
-  ADMIN: "ADMIN",
+  SCM: "SCM",
+  ACCOUNTS: "ACCOUNTS",
   FINANCE: "FINANCE",
-  SUPPLIER: "SUPPLIER",
-  LOGISTICS: "LOGISTICS",
+  ADMIN: "ADMIN",
 } as const;
 
 export const ROLE_LABELS: Record<string, string> = {
-  ADMIN: "Admin",
+  SCM: "Supply Chain Manager",
+  ACCOUNTS: "Accounts",
   FINANCE: "Finance",
-  SUPPLIER: "Supplier",
-  LOGISTICS: "Logistics",
+  ADMIN: "Admin",
 };
 
 export const PO_STATUSES = {

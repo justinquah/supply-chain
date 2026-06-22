@@ -3,14 +3,10 @@ import { getCurrentUser } from "@/lib/supabase/server";
 import { NavBar } from "@/components/nav-bar";
 
 const ROLE_LABELS: Record<string, string> = {
-  SUPER_ADMIN: "Super Admin",
   SCM: "Supply Chain Manager",
-  GENERAL: "General",
+  ACCOUNTS: "Accounts",
   FINANCE: "Finance",
   ADMIN: "Admin",
-  LOGISTICS: "Logistics",
-  WAREHOUSE: "Warehouse",
-  SUPPLIER: "Supplier",
 };
 
 export default async function AuthedLayout({
