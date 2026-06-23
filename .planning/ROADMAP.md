@@ -26,7 +26,7 @@ Four phases take JJANGX3's supply chain from the current Supabase rebuild to a 1
 **Success Criteria** (what must be TRUE):
 
   1. Production URL serves `/login` without a 500 error
-  2. A user signs in and is assigned exactly one of SCM / Accounts / Finance / Admin / Warehouse, with pages and actions gated by that role (WAREHOUSE role exists + is assignable in Phase 1; its dedicated receiving workspace + data grants land in Phase 4)
+  2. A user signs in and is assigned exactly one of SCM / Accounts / Finance / Admin / Warehouse / Logistics, with pages and actions gated by that role (WAREHOUSE + LOGISTICS roles exist + are assignable in Phase 1; their dedicated workspaces + data grants land in Phase 4)
   3. Admin can create users and assign or change roles
   4. Shopee/marketplace sync and legacy forecasting/optimizer/scheduler code no longer ship in the app
 
@@ -91,7 +91,7 @@ Plans:
 **Requirements**: PO-01, PO-02, PO-03, PO-04, PO-05, PO-06, WHS-01, WHS-02, WHS-03, WHS-04, FIN-01, FIN-02, FIN-03, FIN-04, NTF-01
 **Success Criteria** (what must be TRUE):
 
-  1. A PO moves DRAFT → PO_APPROVED → INVOICE_RECEIVED → SHIPPED → RECEIVED with the right role acting at each stage (WAREHOUSE marks RECEIVED)
+  1. A PO moves DRAFT → PO_APPROVED → INVOICE_RECEIVED → SHIPPED → RECEIVED with the right role acting at each stage (LOGISTICS uploads BL/K1 + sets delivery ETA → SHIPPED; WAREHOUSE marks RECEIVED)
   2. Marking RECEIVED is gated on BL + K1_FINAL uploaded AND balance == 0
   3. Finance sees POs with `balance_remaining > 0`, records partial payments (amount + slip), and the running balance + `balance_due_by` update; balance == 0 settles the PO
   4. PO/invoice/shipping/payment/receipt-proof documents land in their correct Supabase Storage buckets
@@ -102,7 +102,7 @@ Plans:
 
 Plans:
 
-- [ ] 04-01: PO state machine + per-stage UIs (draft, approve, invoice, ship, receive) + document storage
+- [ ] 04-01: PO state machine + per-stage UIs (draft, approve, invoice, logistics-clearance/ship, receive) + document storage (clearance stage — BL/K1/ETA — owned by LOGISTICS)
 - [ ] 04-02: Finance inbox + partial payments + running balance / balance_due_by
 - [ ] 04-03: In-app notification bell for hand-offs (incl. WAREHOUSE ETA)
 - [ ] 04-04: Warehouse goods receipt (qty/damage remark + proof, WAREHOUSE marks RECEIVED) + container arrival/unload tracking (WHS-01..04)

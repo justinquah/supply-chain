@@ -2,7 +2,7 @@
 
 ## What This Is
 
-An internal web app that moves JJANGX3's supply chain off spreadsheets onto one system. It does three things: (1) scores how well stock is managed via Overstock % / OOS % KPIs across month/quarter/FY, (2) tracks every purchase order through its hand-offs (SCM → Accounts → SCM → Finance → Warehouse), and (3) goes live 1 July 2026. Users are five internal roles: SCM, Accounts, Finance, Admin, Warehouse.
+An internal web app that moves JJANGX3's supply chain off spreadsheets onto one system. It does three things: (1) scores how well stock is managed via Overstock % / OOS % KPIs across month/quarter/FY, (2) tracks every purchase order through its hand-offs (SCM → Accounts → SCM → Finance → Logistics → Warehouse), and (3) goes live 1 July 2026. Users are six internal roles: SCM, Accounts, Finance, Admin, Warehouse, Logistics.
 
 ## Core Value
 
@@ -31,7 +31,8 @@ The SCM signs in and sees trustworthy Overstock % and OOS % KPI tiles for the cu
 
 <!-- Locked scope for the 1 Jul 2026 go-live. Hypotheses until shipped + validated. -->
 
-- [ ] Five-role auth model (SCM, Accounts, Finance, Admin, Warehouse) with role-gated access
+- [ ] Six-role auth model (SCM, Accounts, Finance, Admin, Warehouse, Logistics) with role-gated access
+- [ ] Logistics clearance: LOGISTICS does customs clearance — uploads BL + K1_FINAL and sets the delivery-to-warehouse ETA → moves PO to SHIPPED (was SCM in the original brief) (Phase 4)
 - [ ] Warehouse goods receipt: WAREHOUSE keys quantity received + damaged/short as a remark on the PO (does NOT adjust stock figures), with proof upload for short/damaged; WAREHOUSE marks the PO RECEIVED (Phase 4)
 - [ ] Container tracking (one PO = one container): notify WAREHOUSE of incoming ETA to prep unload; record container arrived-at + unload-completed timestamps → unload duration (Phase 4)
 - [ ] Weekly stock upload (Excel/CSV → `stock_snapshots`, one row per product × Monday, `source='WEEKLY_UPLOAD'`)
@@ -64,7 +65,7 @@ The SCM signs in and sees trustworthy Overstock % and OOS % KPI tiles for the cu
 ## Constraints
 
 - **Tech stack**: Next.js 16 + Turbopack, React 19, Supabase (Postgres + Auth + Storage), shadcn/ui, Tailwind 4 — **no new top-level dependencies without explicit approval**.
-- **Roles**: exactly five (SCM, Accounts, Finance, Admin, Warehouse). (Was four in the original brief; WAREHOUSE added 2026-06-22 — see Key Decisions.)
+- **Roles**: exactly six (SCM, Accounts, Finance, Admin, Warehouse, Logistics). (Was four in the original brief; WAREHOUSE + LOGISTICS confirmed as real, distinct roles 2026-06-22 — see Key Decisions.)
 - **Currency**: MYR.
 - **Timezone**: Asia/Kuala_Lumpur — all Monday/snapshot computation in this TZ.
 - **Financial Year**: Oct → Sep (FY25/26 = 1 Oct 2025 – 30 Sep 2026).
@@ -75,7 +76,8 @@ The SCM signs in and sees trustworthy Overstock % and OOS % KPI tiles for the cu
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | Drop marketplace API sync (Shopee/Lazada/TikTok) | Out of scope; reduces surface for go-live | — Pending (strip in M0) |
-| ~~Exactly 4 roles~~ → **5 roles** (add WAREHOUSE) | Warehouse staff need to key goods receipt + be notified of container ETA; overrides the brief's 4-role lock | — Pending (role folded into Phase 1 on 2026-06-22; features → Phase 4) |
+| ~~Exactly 4 roles~~ → **6 roles** (add WAREHOUSE + LOGISTICS) | Warehouse keys goods receipt; Logistics does customs clearance (K1/BL/ETA). Both are distinct real teams; overrides the brief's 4-role lock | — Pending (roles folded into Phase 1 on 2026-06-22; features → Phase 4) |
+| LOGISTICS owns the PO clearance stage (upload BL + K1_FINAL, set delivery ETA → SHIPPED) | Clearance/freight is a separate function from SCM and from warehouse receiving | — Pending (Phase 4; was SCM in the brief) |
 | WAREHOUSE marks RECEIVED + records receipt as remark-only (no stock change) | Receiving is the warehouse's job; discrepancies are informational, kept decoupled from KPI stock | — Pending (Phase 4) |
 | Container arrival/unload tracking IN scope (1 PO = 1 container) | Distinct from the excluded container *optimizer*; lightweight ETA-prep + arrived/unload timing | — Pending (Phase 4) |
 | KPI = Overstock % + OOS % + Healthy %, 2×AMS_3mo threshold | Locked business definition | — Pending |

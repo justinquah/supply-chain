@@ -15,8 +15,8 @@ Requirements for the 1 July 2026 go-live. Each maps to a roadmap phase.
 
 ### Auth & Roles
 
-- [ ] **AUTH-01**: A user can sign in and is assigned exactly one of five roles (SCM, Accounts, Finance, Admin, Warehouse) — migration 0011 written, not yet applied (`supabase db push` pending)
-- [ ] **AUTH-02**: Access to pages and actions is gated by role (SCM, Accounts, Finance, Admin, Warehouse scopes per the brief)
+- [ ] **AUTH-01**: A user can sign in and is assigned exactly one of six roles (SCM, Accounts, Finance, Admin, Warehouse, Logistics) — migration 0011 written, not yet applied (`supabase db push` pending)
+- [ ] **AUTH-02**: Access to pages and actions is gated by role (SCM, Accounts, Finance, Admin, Warehouse, Logistics scopes per the brief)
 - [ ] **AUTH-03**: Admin can manage users and assign/change roles
 
 ### Stock Upload
@@ -46,7 +46,7 @@ Requirements for the 1 July 2026 go-live. Each maps to a roadmap phase.
 - [ ] **PO-01**: SCM can draft a PO (supplier, product range, expected_invoice_amount, deposit_pct, payment_terms) → state DRAFT
 - [ ] **PO-02**: Accounts can upload the signed PO PDF, set `po_number` and `targeted_eta` → state PO_APPROVED
 - [ ] **PO-03**: SCM can upload the supplier invoice file and key `invoice_amount` + `invoice_number` and confirm payment_terms → state INVOICE_RECEIVED
-- [ ] **PO-04**: SCM can upload BL and K1_FINAL and set `actual_eta` → state SHIPPED
+- [ ] **PO-04**: LOGISTICS does customs clearance — uploads BL and K1_FINAL and sets `actual_eta` (delivery-to-warehouse ETA) → state SHIPPED *(was SCM in the original brief; reassigned to Logistics 2026-06-22)*
 - [ ] **PO-05**: WAREHOUSE can mark a PO RECEIVED (recording goods-receipt qty/damage — see WHS-01/02), gated on BL + K1_FINAL uploaded AND balance == 0
 - [ ] **PO-06**: PO documents are stored in the correct buckets (po-pdfs, invoices, shipping-docs)
 
