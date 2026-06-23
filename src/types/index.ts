@@ -1,7 +1,7 @@
 import { z } from "zod";
 
-/** The five canonical application roles (mirrors the user_role DB enum post-0011 migration). */
-export const appRoleSchema = z.enum(["SCM", "ACCOUNTS", "FINANCE", "ADMIN", "WAREHOUSE"]);
+/** The six canonical application roles (mirrors the user_role DB enum post-0011 migration). */
+export const appRoleSchema = z.enum(["SCM", "ACCOUNTS", "FINANCE", "ADMIN", "WAREHOUSE", "LOGISTICS"]);
 export type AppRoleEnum = z.infer<typeof appRoleSchema>;
 
 export const createUserSchema = z.object({

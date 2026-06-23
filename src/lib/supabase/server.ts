@@ -4,8 +4,8 @@ import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
-/** The five canonical application roles. */
-export type AppRole = "SCM" | "ACCOUNTS" | "FINANCE" | "ADMIN" | "WAREHOUSE";
+/** The six canonical application roles. */
+export type AppRole = "SCM" | "ACCOUNTS" | "FINANCE" | "ADMIN" | "WAREHOUSE" | "LOGISTICS";
 
 export async function createClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
