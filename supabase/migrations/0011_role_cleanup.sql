@@ -22,14 +22,17 @@ ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'ACCOUNTS';
 -- ============================================================
 -- Step 2: Remap every deprecated-role profile row to ADMIN (D-02)
 -- ============================================================
--- After this UPDATE, no row in public.profiles carries a deprecated role.
+-- This UPDATE folds only the genuinely-defunct admin-ish roles into ADMIN.
 -- WAREHOUSE and LOGISTICS are RETAINED (real roles per scope clarification 2026-06-22):
--- their rows are left as-is. LOGISTICS = clearance (uploads K1/BL, sets delivery ETA →
--- SHIPPED); WAREHOUSE = receiving (qty/defect, unload → RECEIVED). Their data grants +
--- UI land in Phase 4.
+-- LOGISTICS = clearance (uploads K1/BL, sets delivery ETA → SHIPPED); WAREHOUSE = receiving
+-- (qty/defect, unload → RECEIVED). Their data grants + UI land in Phase 4.
+-- SUPPLIER is also RETAINED (2026-06-22): the existing SUPPLIER rows are off-app supplier
+-- *reference records* (referenced by purchase_orders.supplier_id), NOT app users — they must
+-- NOT become ADMIN. They keep role='SUPPLIER' and have no app access (the app role model +
+-- the RLS policies below exclude SUPPLIER). Only SUPER_ADMIN + GENERAL fold into ADMIN.
 UPDATE public.profiles
   SET role = 'ADMIN'
-  WHERE role IN ('SUPER_ADMIN', 'GENERAL', 'SUPPLIER');
+  WHERE role IN ('SUPER_ADMIN', 'GENERAL');
 
 -- ============================================================
 -- Step 3: Drop the GENERAL column default (D-03)
@@ -78,9 +81,10 @@ $$ LANGUAGE SQL STABLE;
 -- Step 6: Rebuild RLS policies — full blast-radius coverage
 -- ============================================================
 -- Each policy is DROPped then re-CREATEd so the definition is clean.
--- Dead roles removed: SUPER_ADMIN, GENERAL, SUPPLIER.
--- WAREHOUSE + LOGISTICS retained (real roles) — not granted these policies in
--- Phase 1; their data grants (warehouse receiving / logistics clearance) are added in Phase 4.
+-- Folded into ADMIN: SUPER_ADMIN, GENERAL.
+-- Retained: WAREHOUSE + LOGISTICS (real roles — grants added in Phase 4) and SUPPLIER
+-- (off-app supplier reference records). Policies below grant access only to the canonical
+-- app roles, so retained SUPPLIER rows have no app access.
 -- Dead branches removed: SUPPLIER-scoped sub-selects (no SUPPLIER rows remain).
 -- ACCOUNTS added where Phase-4 PO/document access needs it (per Open Question #3).
 --
@@ -428,5 +432,5 @@ CREATE POLICY pg_write ON product_groups FOR ALL TO authenticated
 --   -- should return 1 row
 --
 --   SELECT count(*) FROM public.profiles
---     WHERE role IN ('SUPER_ADMIN','GENERAL','SUPPLIER');
---   -- should return 0 (LOGISTICS + WAREHOUSE are KEPT — real roles, not deprecated)
+--     WHERE role IN ('SUPER_ADMIN','GENERAL');
+--   -- should return 0 (LOGISTICS, WAREHOUSE, SUPPLIER rows are intentionally KEPT)
