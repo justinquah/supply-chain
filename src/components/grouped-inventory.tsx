@@ -19,6 +19,13 @@ export type ProductRow = {
   monthly_sales_value_myr?: number;
 };
 
+/** Per-product incoming quantities bucketed into 3 calendar-month buckets. */
+export type IncomingBuckets = {
+  thisMonth: number;
+  nextMonth: number;
+  following: number;
+};
+
 const IDEAL = 1.5;
 
 function n(v: number, dp = 0) {
@@ -45,37 +52,59 @@ type Group = {
   ams: number;
   amsOnline: number;
   amsOffline: number;
-  incoming: number;
+  lastMonthSales: number;
+  incomingThis: number;
+  incomingNext: number;
+  incomingFollowing: number;
   value: number;
   coverage: number | null;
 };
 
-export function GroupedInventory({ products }: { products: ProductRow[] }) {
+export function GroupedInventory({
+  products,
+  incomingMap,
+  lastMonthSalesMap,
+}: {
+  products: ProductRow[];
+  /** product_id → IncomingBuckets (may be absent if no incoming) */
+  incomingMap?: Record<string, IncomingBuckets>;
+  /** product_id → total units sold in prev completed calendar month */
+  lastMonthSalesMap?: Record<string, number>;
+}) {
+  // All multi-product families start expanded
   const [open, setOpen] = useState<Record<string, boolean>>({});
 
   // group by family
   const map = new Map<string, Group>();
   for (const p of products) {
     const fam = p.product_family || p.name;
+    const buckets = incomingMap?.[p.id] ?? { thisMonth: 0, nextMonth: 0, following: 0 };
+    const lastSales = lastMonthSalesMap?.[p.id] ?? 0;
     const g =
-      map.get(fam) ||
-      {
+      map.get(fam) ??
+      ({
         family: fam,
         rows: [],
         stock: 0,
         ams: 0,
         amsOnline: 0,
         amsOffline: 0,
-        incoming: 0,
+        lastMonthSales: 0,
+        incomingThis: 0,
+        incomingNext: 0,
+        incomingFollowing: 0,
         value: 0,
         coverage: null,
-      };
+      } satisfies Group);
     g.rows.push(p);
     g.stock += Number(p.current_stock || 0);
     g.ams += Number(p.ams_total || 0);
     g.amsOnline += Number(p.ams_online || 0);
     g.amsOffline += Number(p.ams_offline || 0);
-    g.incoming += Number(p.incoming_total || 0);
+    g.lastMonthSales += Number(lastSales || 0);
+    g.incomingThis += Number(buckets.thisMonth || 0);
+    g.incomingNext += Number(buckets.nextMonth || 0);
+    g.incomingFollowing += Number(buckets.following || 0);
     g.value += Number(p.inventory_value_myr || 0);
     map.set(fam, g);
   }
@@ -85,6 +114,12 @@ export function GroupedInventory({ products }: { products: ProductRow[] }) {
       coverage: g.ams > 0 ? g.stock / g.ams : null,
     }))
     .sort((a, b) => b.ams - a.ams);
+
+  function isOpen(fam: string, multi: boolean) {
+    // Default: open if multi-row family (unless explicitly closed by user)
+    if (fam in open) return open[fam];
+    return multi;
+  }
 
   return (
     <div className="overflow-x-auto bg-white rounded-lg border border-gray-200">
@@ -96,15 +131,18 @@ export function GroupedInventory({ products }: { products: ProductRow[] }) {
             <th className="py-2.5 px-3 font-medium text-right">AMS</th>
             <th className="py-2.5 px-3 font-medium text-right">Online</th>
             <th className="py-2.5 px-3 font-medium text-right">Offline</th>
-            <th className="py-2.5 px-3 font-medium text-right">Incoming</th>
+            <th className="py-2.5 px-3 font-medium text-right">Last mo</th>
+            <th className="py-2.5 px-3 font-medium text-right">This mo</th>
+            <th className="py-2.5 px-3 font-medium text-right">Next mo</th>
+            <th className="py-2.5 px-3 font-medium text-right">Following</th>
             <th className="py-2.5 px-3 font-medium text-right">Inv. value</th>
             <th className="py-2.5 pr-4 pl-3 font-medium text-right">Coverage</th>
           </tr>
         </thead>
         <tbody>
           {groups.map((g) => {
-            const isOpen = open[g.family];
             const multi = g.rows.length > 1;
+            const expanded = isOpen(g.family, multi);
             return (
               <Fragment key={g.family}>
                 <tr
@@ -113,14 +151,14 @@ export function GroupedInventory({ products }: { products: ProductRow[] }) {
                     multi && "cursor-pointer hover:bg-gray-50"
                   )}
                   onClick={() =>
-                    multi && setOpen((o) => ({ ...o, [g.family]: !o[g.family] }))
+                    multi && setOpen((o) => ({ ...o, [g.family]: !isOpen(g.family, true) }))
                   }
                 >
                   <td className="py-2.5 pl-4 pr-3 font-medium text-gray-900">
                     <span className="inline-flex items-center gap-1.5">
                       {multi && (
                         <span className="text-gray-400 text-xs w-3">
-                          {isOpen ? "▾" : "▸"}
+                          {expanded ? "▾" : "▸"}
                         </span>
                       )}
                       {!multi && <span className="w-3" />}
@@ -145,7 +183,16 @@ export function GroupedInventory({ products }: { products: ProductRow[] }) {
                     {n(g.amsOffline)}
                   </td>
                   <td className="py-2.5 px-3 text-right tabular-nums text-gray-500">
-                    {n(g.incoming)}
+                    {n(g.lastMonthSales)}
+                  </td>
+                  <td className="py-2.5 px-3 text-right tabular-nums text-gray-500">
+                    {n(g.incomingThis)}
+                  </td>
+                  <td className="py-2.5 px-3 text-right tabular-nums text-gray-500">
+                    {n(g.incomingNext)}
+                  </td>
+                  <td className="py-2.5 px-3 text-right tabular-nums text-gray-500">
+                    {n(g.incomingFollowing)}
                   </td>
                   <td className="py-2.5 px-3 text-right tabular-nums text-gray-600">
                     {rm(g.value)}
@@ -156,47 +203,60 @@ export function GroupedInventory({ products }: { products: ProductRow[] }) {
                     </span>
                   </td>
                 </tr>
-                {isOpen &&
+                {expanded &&
                   g.rows
                     .sort((a, b) => b.ams_total - a.ams_total)
-                    .map((p) => (
-                      <tr
-                        key={p.id}
-                        className="border-b border-gray-100 bg-gray-50/40 text-gray-600"
-                      >
-                        <td className="py-1.5 pl-10 pr-3">
-                          {p.variation || p.name}
-                          <span className="text-xs text-gray-400 ml-2">
-                            {p.sku}
-                          </span>
-                        </td>
-                        <td className="py-1.5 px-3 text-right tabular-nums">
-                          {n(p.current_stock)}
-                        </td>
-                        <td className="py-1.5 px-3 text-right tabular-nums">
-                          {n(p.ams_total)}
-                        </td>
-                        <td className="py-1.5 px-3 text-right tabular-nums">
-                          {n(p.ams_online)}
-                        </td>
-                        <td className="py-1.5 px-3 text-right tabular-nums">
-                          {n(p.ams_offline)}
-                        </td>
-                        <td className="py-1.5 px-3 text-right tabular-nums">
-                          {n(p.incoming_total)}
-                        </td>
-                        <td className="py-1.5 px-3 text-right tabular-nums">
-                          {rm(p.inventory_value_myr)}
-                        </td>
-                        <td className="py-1.5 pr-4 pl-3 text-right tabular-nums">
-                          <span className={coverageClass(p.coverage_months)}>
-                            {p.coverage_months == null
-                              ? "—"
-                              : n(p.coverage_months, 1) + " mo"}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
+                    .map((p) => {
+                      const pb = incomingMap?.[p.id] ?? { thisMonth: 0, nextMonth: 0, following: 0 };
+                      const ls = lastMonthSalesMap?.[p.id] ?? 0;
+                      return (
+                        <tr
+                          key={p.id}
+                          className="border-b border-gray-100 bg-gray-50/40 text-gray-600"
+                        >
+                          <td className="py-1.5 pl-10 pr-3">
+                            {p.variation || p.name}
+                            <span className="text-xs text-gray-400 ml-2">
+                              {p.sku}
+                            </span>
+                          </td>
+                          <td className="py-1.5 px-3 text-right tabular-nums">
+                            {n(p.current_stock)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right tabular-nums">
+                            {n(p.ams_total)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right tabular-nums">
+                            {n(p.ams_online)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right tabular-nums">
+                            {n(p.ams_offline)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right tabular-nums">
+                            {n(ls)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right tabular-nums">
+                            {n(pb.thisMonth)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right tabular-nums">
+                            {n(pb.nextMonth)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right tabular-nums">
+                            {n(pb.following)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right tabular-nums">
+                            {rm(p.inventory_value_myr)}
+                          </td>
+                          <td className="py-1.5 pr-4 pl-3 text-right tabular-nums">
+                            <span className={coverageClass(p.coverage_months)}>
+                              {p.coverage_months == null
+                                ? "—"
+                                : n(p.coverage_months, 1) + " mo"}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
               </Fragment>
             );
           })}

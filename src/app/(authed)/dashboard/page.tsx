@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { GroupedInventory, type ProductRow } from "@/components/grouped-inventory";
+import { GroupedInventory, type ProductRow, type IncomingBuckets } from "@/components/grouped-inventory";
 import { MonthSelector } from "@/components/month-selector";
 
 const IDEAL = 1.5;
@@ -15,6 +15,11 @@ function num(v: number, dp = 0) {
   });
 }
 const MONTHS = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** Format a date like "11 May 2026" */
+function fmtDate(d: Date): string {
+  return `${d.getDate()} ${MONTHS[d.getMonth() + 1]} ${d.getFullYear()}`;
+}
 
 export default async function DashboardPage({
   searchParams,
@@ -37,15 +42,90 @@ export default async function DashboardPage({
   const selMonth = sp.m ? Number(sp.m) : latest.month;
   const isLatest = selYear === latest.year && selMonth === latest.month;
 
+  // Today in Asia/Kuala_Lumpur for bucketing
+  const nowKL = new Date(
+    new Date().toLocaleString("en-US", { timeZone: "Asia/Kuala_Lumpur" })
+  );
+  const curYear = nowKL.getFullYear();
+  const curMonth = nowKL.getMonth() + 1; // 1-based
+
+  // Previous completed calendar month
+  const prevMonth = curMonth === 1 ? 12 : curMonth - 1;
+  const prevYear = curMonth === 1 ? curYear - 1 : curYear;
+
   // Use the as-of function so AMS reflects the 3 months ending at the selected month
-  const [{ data: rows }, { data: weekly }] = await Promise.all([
+  const [
+    { data: rows },
+    { data: weekly },
+    { data: incomingRows },
+    { data: lastMonthRows },
+    { data: stockDateRow },
+  ] = await Promise.all([
     supabase.rpc("product_dashboard_asof", { p_year: selYear, p_month: selMonth }),
     supabase.from("inventory_weekly").select("*"),
+    // Incoming stock bucketed (status=EXPECTED only)
+    supabase
+      .from("incoming_stock")
+      .select("product_id, quantity, expected_date")
+      .eq("status", "EXPECTED"),
+    // Last completed calendar month sales
+    supabase
+      .from("monthly_sales")
+      .select("main_product_id, units_equivalent")
+      .eq("year", prevYear)
+      .eq("month", prevMonth),
+    // Latest stock snapshot date
+    supabase
+      .from("stock_snapshots")
+      .select("recorded_at")
+      .order("recorded_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
   ]);
 
   const products = ((rows ?? []) as any[])
     .filter((p) => p.is_main && p.is_active)
     .sort((a, b) => Number(b.ams_total) - Number(a.ams_total)) as ProductRow[] & any[];
+
+  // Build incoming buckets map: product_id → { thisMonth, nextMonth, following }
+  const incomingMap: Record<string, IncomingBuckets> = {};
+  for (const row of incomingRows ?? []) {
+    const d = new Date(row.expected_date);
+    const yr = d.getUTCFullYear();
+    const mo = d.getUTCMonth() + 1; // 1-based
+
+    // Determine bucket
+    let bucket: keyof IncomingBuckets;
+    const monthsAhead =
+      (yr - curYear) * 12 + (mo - curMonth);
+    if (monthsAhead <= 0) {
+      // past or current month
+      bucket = "thisMonth";
+    } else if (monthsAhead === 1) {
+      bucket = "nextMonth";
+    } else {
+      bucket = "following";
+    }
+
+    const pid = row.product_id;
+    if (!incomingMap[pid]) {
+      incomingMap[pid] = { thisMonth: 0, nextMonth: 0, following: 0 };
+    }
+    incomingMap[pid][bucket] += Number(row.quantity || 0);
+  }
+
+  // Build last-month sales map: product_id → total units_equivalent
+  const lastMonthSalesMap: Record<string, number> = {};
+  for (const row of lastMonthRows ?? []) {
+    if (!row.main_product_id) continue;
+    lastMonthSalesMap[row.main_product_id] =
+      (lastMonthSalesMap[row.main_product_id] ?? 0) + Number(row.units_equivalent || 0);
+  }
+
+  // Latest stock snapshot date for display
+  const stockAsOf: string | null = stockDateRow?.recorded_at
+    ? fmtDate(new Date(stockDateRow.recorded_at))
+    : null;
 
   // KPIs
   const inventoryValue = products.reduce(
@@ -181,11 +261,22 @@ export default async function DashboardPage({
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle>Inventory by product range</CardTitle>
           <span className="text-xs text-gray-500">
-            {num(totalStock)} units · AMS {num(totalAms)}/mo · click a range to expand
+            {num(totalStock)} units · AMS {num(totalAms)}/mo ·{" "}
+            {stockAsOf ? `Stock as of ${stockAsOf}` : "click a range to expand"}
           </span>
         </CardHeader>
         <CardContent className="p-0">
-          <GroupedInventory products={products} />
+          {stockAsOf && (
+            <p className="px-4 pt-3 pb-1 text-xs text-gray-400">
+              Stock as of <span className="font-medium text-gray-600">{stockAsOf}</span>
+              {" · "}Incoming bucketed by calendar month · Last mo = {MONTHS[prevMonth]} {prevYear}
+            </p>
+          )}
+          <GroupedInventory
+            products={products}
+            incomingMap={incomingMap}
+            lastMonthSalesMap={lastMonthSalesMap}
+          />
         </CardContent>
       </Card>
     </div>
