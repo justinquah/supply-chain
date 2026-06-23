@@ -68,12 +68,14 @@ Recent decisions affecting current work:
 - Init: Dropped marketplace API sync (Shopee/Lazada/TikTok) — strip in Phase 1
 - Init: Exactly 4 roles (SCM, Accounts, Finance, Admin)
 - Init: KPI = Overstock %/OOS %/Healthy % with 2×AMS_3mo threshold, 6-month SKU incubation, FY Oct→Sep
-- [Phase ?]: D-09 confirmed: safe to delete
-- [Phase ?]: D-10 complete
+- 2026-06-23: Roles now 6 (added WAREHOUSE + LOGISTICS) — see PROJECT.md
+- 2026-06-23 (KPI model): **BOTH** — keep the live inventory value/turnover/coverage dashboard AND add the brief's Overstock %/OOS %/Healthy % tiles. (User confirmed.)
+- 2026-06-23 (Stock Levels UI): show latest snapshot + its date (no week picker — "always latest"); group by range→variation. Shipped early (Batch 1).
+- 2026-06-23 (Dashboard UI): auto-expand ranges; "Stock as of" date; Incoming split into this/next/following month (by incoming_stock.expected_date, KL tz); "Last mo sales" = previous completed month units (online+offline). Shipped early (Batch 1).
 
 ### Pending Todos
 
-None yet.
+- **Batch 2 — Overstock %/OOS %/Healthy % KPI engine + tiles** (the "both" decision; Phase 2 KPI core): FY helpers (fy_of/fy_quarter_of/fy_label), per-snapshot classification (OOS=0, OVERSTOCK>2×AMS_3mo, HEALTHY between) with 6-month SKU eligibility, weekly→monthly→quarterly→FY aggregation, then add the KPI tiles to the dashboard / KPIs page. Needs a DB migration.
 
 ### Blockers/Concerns
 
