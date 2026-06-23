@@ -13,8 +13,8 @@ progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 3
-  completed_plans: 1
-  percent: 33
+  completed_plans: 3
+  percent: 100
 ---
 
 # Project State
@@ -28,12 +28,12 @@ See: .planning/PROJECT.md (updated 2026-06-22)
 
 ## Current Position
 
-Phase: 1 (Foundation & Roles) — EXECUTING (paused at human-action gates)
-Plan: 1 of 3 complete (01-01). 01-02 + 01-03 code/SQL staged, awaiting human action.
-Status: Awaiting human action — (a) `supabase db push` (migrations 0011/0012), (b) Vercel env vars incl. SUPABASE_SERVICE_ROLE_KEY, (c) end-to-end verify (/login, admin invite, role gating)
-Last activity: 2026-06-22 — Phase 1 Waves 1–3 code authored; build green; live DB push + deploy env deferred to human
+Phase: 1 (Foundation & Roles) — DEPLOYED to production
+Plan: 3 of 3 complete (migrations applied + verified; app deployed; /login HTTP 200)
+Status: Phase 1 shipped to prod (supplychain.jjangx3.com). Final UAT pending — log in as ADMIN, confirm role gating + Admin invite/role-change. Ready to start Phase 2.
+Last activity: 2026-06-23 — Migrations 0011/0012 applied to prod via Management API; 3 Vercel env vars set; pushed main → prod deploy READY; /login verified 200
 
-Progress: [███░░░░░░░] 33% (1/3 plans fully done; 2 staged)
+Progress: [██████████] 100% (Phase 1 plans; UAT pending)
 
 ## Performance Metrics
 

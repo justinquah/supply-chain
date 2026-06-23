@@ -39,11 +39,11 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 01-02-PLAN.md — Role/cleanup DB migrations (0011 ACCOUNTS+remap+RLS, 0012 drop integration tables). ✏️ SQL written + committed; ⏸ awaiting human `supabase db push` (Wave 2)
+- [x] 01-02-PLAN.md — Role/cleanup DB migrations (0011 ACCOUNTS+remap+RLS, 0012 drop integration tables). ✓ applied to prod 2026-06-23 + verified (Wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 01-03-PLAN.md — Four-role app layer: requireRole gating, Admin user management, /login 500-hardening. ✏️ code written + committed (build green); ⏸ awaiting Vercel env + end-to-end verify (Wave 3)
+- [x] 01-03-PLAN.md — Six-role app layer: requireRole gating, Admin user management, /login 500-hardening. ✓ deployed to prod 2026-06-23; /login HTTP 200 verified; admin invite pending in-browser UAT (Wave 3)
 
 ### Phase 2: KPI Engine & Stock Upload
 
@@ -114,7 +114,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation & Roles | 1/3 | In Progress (2 staged) |  |
+| 1. Foundation & Roles | 3/3 | Deployed (UAT pending) | 2026-06-23 |
 | 2. KPI Engine & Stock Upload | 0/3 | Not started | - |
 | 3. KPI Dashboard | 0/2 | Not started | - |
 | 4. PO Workflow & Finance | 0/4 | Not started | - |

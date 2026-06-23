@@ -11,13 +11,13 @@ Requirements for the 1 July 2026 go-live. Each maps to a roadmap phase.
 
 - [x] **FND-01**: Existing Shopee/marketplace API sync code is removed from the app
 - [x] **FND-02**: Legacy demand-forecasting / container-optimizer / payment-scheduler code is deleted
-- [ ] **FND-03**: Production deploys serve `/login` without a 500 error
+- [x] **FND-03**: Production deploys serve `/login` without a 500 error — verified live (HTTP 200) at supplychain.jjangx3.com 2026-06-23
 
 ### Auth & Roles
 
-- [ ] **AUTH-01**: A user can sign in and is assigned exactly one of six roles (SCM, Accounts, Finance, Admin, Warehouse, Logistics) — migration 0011 written, not yet applied (`supabase db push` pending)
-- [ ] **AUTH-02**: Access to pages and actions is gated by role (SCM, Accounts, Finance, Admin, Warehouse, Logistics scopes per the brief)
-- [ ] **AUTH-03**: Admin can manage users and assign/change roles
+- [x] **AUTH-01**: A user can sign in and is assigned exactly one of six roles (SCM, Accounts, Finance, Admin, Warehouse, Logistics) — migration 0011 applied to prod 2026-06-23 (2 ADMIN, 6 supplier rows preserved off-app)
+- [ ] **AUTH-02**: Access to pages and actions is gated by role (SCM, Accounts, Finance, Admin, Warehouse, Logistics scopes per the brief) — code deployed; pending in-browser UAT
+- [ ] **AUTH-03**: Admin can manage users and assign/change roles — deployed (service-role key set); pending in-browser UAT (invite/role-change)
 
 ### Stock Upload
 
@@ -92,10 +92,10 @@ Deferred — acknowledged but not in the go-live roadmap.
 |-------------|-------|--------|
 | FND-01 | Phase 1 | Complete |
 | FND-02 | Phase 1 | Complete |
-| FND-03 | Phase 1 | Pending |
-| AUTH-01 | Phase 1 | In Progress |
-| AUTH-02 | Phase 1 | Pending |
-| AUTH-03 | Phase 1 | Pending |
+| FND-03 | Phase 1 | Complete |
+| AUTH-01 | Phase 1 | Complete |
+| AUTH-02 | Phase 1 | In Progress (UAT) |
+| AUTH-03 | Phase 1 | In Progress (UAT) |
 | STK-01 | Phase 2 | Pending |
 | STK-02 | Phase 2 | Pending |
 | STK-03 | Phase 2 | Pending |
