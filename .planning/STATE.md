@@ -75,6 +75,7 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
+- **Phase 4 in progress (full-workflow-first).** Done: foundation migrations 0013/0014 (5 PO states, deposit/terms/due-date cols, v_po_balance, WAREHOUSE/LOGISTICS RLS — applied to prod) + **4A staged PO workflow UI** (PO detail page, 5-state stepper, role-gated stage actions: SCM draft → ACCOUNTS approve → SCM invoice → LOGISTICS ship → WAREHOUSE receive; RECEIVED gated on BL+K1+balance==0). Remaining: **4B Finance** (payment recording UI + balance + amount-paid/to-be-paid calendar — this unblocks the RECEIVED gate since balance only hits 0 once payments are recorded), **4C** Logistics clearance detail + Warehouse goods-receipt qty/damage/proof + container arrival/unload + Warehouse arrival calendar, **4D** in-app notifications. PO-04 actor = LOGISTICS, PO-05 actor = WAREHOUSE.
 - **Batch 2 — Overstock %/OOS %/Healthy % KPI engine + tiles** (the "both" decision; Phase 2 KPI core): FY helpers (fy_of/fy_quarter_of/fy_label), per-snapshot classification (OOS=0, OVERSTOCK>2×AMS_3mo, HEALTHY between) with 6-month SKU eligibility, weekly→monthly→quarterly→FY aggregation, then add the KPI tiles to the dashboard / KPIs page. Needs a DB migration.
 
 ### Blockers/Concerns
