@@ -26,7 +26,7 @@ export function PoForm({
     const res = await savePurchaseOrder(fd);
     setSaving(false);
     if (res.ok) {
-      setMsg(`Saved. ${res.uploaded ?? 0} file(s) uploaded.`);
+      setMsg("Draft saved.");
       formRef.current?.reset();
     } else {
       setMsg(`Error: ${res.error}`);
@@ -34,15 +34,13 @@ export function PoForm({
   }
 
   if (!open) {
-    return (
-      <Button onClick={() => setOpen(true)}>+ New PO / Invoice</Button>
-    );
+    return <Button onClick={() => setOpen(true)}>+ New PO (draft)</Button>;
   }
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="font-semibold">New PO / Invoice entry</h3>
+      <div className="flex items-center justify-between mb-1">
+        <h3 className="font-semibold">New PO — draft</h3>
         <button
           onClick={() => setOpen(false)}
           className="text-sm text-gray-500 hover:text-gray-800"
@@ -50,16 +48,15 @@ export function PoForm({
           Close
         </button>
       </div>
+      <p className="text-xs text-gray-500 mb-4">
+        Capture the supplier, product range, and the expected cost / payment plan.
+        The signed PO PDF, supplier invoice, BL/K1 and receipt happen at later
+        stages and on each PO&rsquo;s detail page.
+      </p>
       <form ref={formRef} onSubmit={handleSubmit} className="space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          <Field label="PO number *">
-            <input name="po_number" required className={inputCls} placeholder="PO-2026-001" />
-          </Field>
-          <Field label="Invoice number">
-            <input name="invoice_number" className={inputCls} placeholder="INV-..." />
-          </Field>
-          <Field label="Supplier">
-            <select name="supplier_id" className={inputCls} defaultValue="">
+          <Field label="Supplier *">
+            <select name="supplier_id" required className={inputCls} defaultValue="">
               <option value="">— select —</option>
               {suppliers.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -78,9 +75,13 @@ export function PoForm({
               ))}
             </select>
           </Field>
-          <Field label="Invoice amount">
+          <Field label="PO number (optional)">
+            <input name="po_number" className={inputCls} placeholder="set at approval" />
+          </Field>
+
+          <Field label="Expected invoice amount">
             <input
-              name="invoice_amount"
+              name="expected_invoice_amount"
               type="number"
               step="0.01"
               className={inputCls}
@@ -95,19 +96,31 @@ export function PoForm({
               <option>THB</option>
             </select>
           </Field>
-        </div>
+          <Field label="Deposit %">
+            <input
+              name="deposit_percent"
+              type="number"
+              step="0.01"
+              min="0"
+              max="100"
+              className={inputCls}
+              placeholder="e.g. 30"
+            />
+          </Field>
 
-        <div>
-          <div className="text-sm font-medium text-gray-700 mb-2">
-            Documents (PDF / image)
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-            <FileField label="PO" name="file_po" />
-            <FileField label="Invoice" name="file_invoice" />
-            <FileField label="Bill of Lading" name="file_bl" />
-            <FileField label="Packing List" name="file_pl" />
-            <FileField label="K1" name="file_k1" />
-          </div>
+          <Field label="Payment terms">
+            <input
+              name="payment_terms"
+              className={inputCls}
+              placeholder="e.g. 30% deposit, 70% before shipment"
+            />
+          </Field>
+          <Field label="Deposit due date">
+            <input name="deposit_due_date" type="date" className={inputCls} />
+          </Field>
+          <Field label="Balance due date">
+            <input name="balance_due_date" type="date" className={inputCls} />
+          </Field>
         </div>
 
         <Field label="Notes">
@@ -116,7 +129,7 @@ export function PoForm({
 
         <div className="flex items-center gap-3">
           <Button type="submit" disabled={saving}>
-            {saving ? "Saving…" : "Save entry"}
+            {saving ? "Saving…" : "Save draft"}
           </Button>
           {msg && (
             <span
@@ -142,20 +155,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <label className="block">
       <span className="text-xs text-gray-500 block mb-1">{label}</span>
       {children}
-    </label>
-  );
-}
-
-function FileField({ label, name }: { label: string; name: string }) {
-  return (
-    <label className="block">
-      <span className="text-xs text-gray-500 block mb-1">{label}</span>
-      <input
-        type="file"
-        name={name}
-        accept=".pdf,.png,.jpg,.jpeg,.webp"
-        className="block w-full text-xs text-gray-600 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:text-xs file:bg-gray-100 file:text-gray-700 hover:file:bg-gray-200"
-      />
     </label>
   );
 }
