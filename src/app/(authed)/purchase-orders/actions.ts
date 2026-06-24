@@ -2,8 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient, getCurrentUser } from "@/lib/supabase/server";
-
-const CAN_WRITE = ["SCM", "ACCOUNTS", "ADMIN", "FINANCE"];
+import { PO_DRAFT_CREATORS, canActOnState } from "@/lib/po-workflow";
 
 // doc_type -> storage bucket
 const BUCKET: Record<string, string> = {
@@ -11,116 +10,68 @@ const BUCKET: Record<string, string> = {
   SUPPLIER_INVOICE: "invoices",
   BL: "shipping-docs",
   PACKING_LIST: "shipping-docs",
+  K1_DRAFT: "shipping-docs",
   K1_FINAL: "shipping-docs",
-};
-
-// form field name -> doc_type
-const FIELD_TO_DOCTYPE: Record<string, string> = {
-  file_po: "PO_PDF",
-  file_invoice: "SUPPLIER_INVOICE",
-  file_bl: "BL",
-  file_pl: "PACKING_LIST",
-  file_k1: "K1_FINAL",
+  LOGISTICS_INVOICE: "invoices",
 };
 
 function slug(s: string) {
   return s.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
 }
 
-export async function savePurchaseOrder(
-  formData: FormData
-): Promise<{ ok: boolean; error?: string; uploaded?: number }> {
-  const profile = await getCurrentUser();
-  if (!profile) return { ok: false, error: "Not signed in" };
-  if (!CAN_WRITE.includes(profile.role))
-    return { ok: false, error: "You don't have permission to add POs" };
+type ActionResult = { ok: boolean; error?: string; uploaded?: number };
 
-  const supabase = await createClient();
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
 
-  const poNumber = String(formData.get("po_number") || "").trim();
-  const invoiceNumber = String(formData.get("invoice_number") || "").trim();
-  const supplierId = String(formData.get("supplier_id") || "").trim() || null;
-  const productGroup = String(formData.get("product_group") || "").trim() || null;
-  const invoiceAmount = formData.get("invoice_amount")
-    ? Number(formData.get("invoice_amount"))
-    : null;
-  const invoiceCurrency =
-    String(formData.get("invoice_currency") || "MYR").trim() || "MYR";
-  const notes = String(formData.get("notes") || "").trim() || null;
+// Upload a single file to its bucket and record a po_documents row. Returns an
+// error string on failure, or null on success.
+async function uploadDoc(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  poId: string,
+  docType: string,
+  file: File,
+  uploadedBy: string
+): Promise<string | null> {
+  const bucket = BUCKET[docType];
+  if (!bucket) return `Unknown document type ${docType}`;
+  const path = `${poId}/${docType}/${Date.now()}_${slug(file.name)}`;
+  const buffer = Buffer.from(await file.arrayBuffer());
 
-  if (!poNumber)
-    return { ok: false, error: "PO number is required" };
+  const { error: upErr } = await supabase.storage.from(bucket).upload(path, buffer, {
+    contentType: file.type || "application/octet-stream",
+    upsert: true,
+  });
+  if (upErr) return `Upload failed (${docType}): ${upErr.message}`;
 
-  // Upsert the PO by po_number
-  const { data: existing } = await supabase
+  const { error: docErr } = await supabase.from("po_documents").insert({
+    po_id: poId,
+    doc_type: docType,
+    file_path: `${bucket}/${path}`,
+    file_name: file.name,
+    uploaded_by: uploadedBy,
+    approval_status: docType === "K1_FINAL" ? "PENDING" : "NOT_REQUIRED",
+  });
+  if (docErr) return `Record failed (${docType}): ${docErr.message}`;
+  return null;
+}
+
+function isFile(v: FormDataEntryValue | null): v is File {
+  return !!v && typeof v !== "string" && (v as File).size > 0;
+}
+
+// Fetch the PO's current status (used to enforce the transition is legal).
+async function getPoStatus(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  poId: string
+): Promise<string | null> {
+  const { data } = await supabase
     .from("purchase_orders")
-    .select("id")
-    .eq("po_number", poNumber)
+    .select("status")
+    .eq("id", poId)
     .maybeSingle();
-
-  let poId: string;
-  const poFields = {
-    po_number: poNumber,
-    invoice_number: invoiceNumber || null,
-    invoice_amount: invoiceAmount,
-    invoice_currency: invoiceCurrency,
-    supplier_id: supplierId,
-    product_group: productGroup,
-    notes,
-    status: "ISSUED" as const,
-    proposal_source: "MANUAL_SCM" as const,
-  };
-
-  if (existing) {
-    poId = existing.id;
-    const { error } = await supabase
-      .from("purchase_orders")
-      .update(poFields)
-      .eq("id", poId);
-    if (error) return { ok: false, error: error.message };
-  } else {
-    const { data, error } = await supabase
-      .from("purchase_orders")
-      .insert(poFields)
-      .select("id")
-      .single();
-    if (error || !data) return { ok: false, error: error?.message || "Insert failed" };
-    poId = data.id;
-  }
-
-  // Upload any provided files
-  let uploaded = 0;
-  for (const [field, docType] of Object.entries(FIELD_TO_DOCTYPE)) {
-    const file = formData.get(field) as File | null;
-    if (!file || typeof file === "string" || file.size === 0) continue;
-
-    const bucket = BUCKET[docType];
-    const path = `${poId}/${docType}/${Date.now()}_${slug(file.name)}`;
-    const buffer = Buffer.from(await file.arrayBuffer());
-
-    const { error: upErr } = await supabase.storage
-      .from(bucket)
-      .upload(path, buffer, {
-        contentType: file.type || "application/octet-stream",
-        upsert: true,
-      });
-    if (upErr) return { ok: false, error: `Upload failed (${docType}): ${upErr.message}` };
-
-    const { error: docErr } = await supabase.from("po_documents").insert({
-      po_id: poId,
-      doc_type: docType,
-      file_path: `${bucket}/${path}`,
-      file_name: file.name,
-      uploaded_by: profile.id,
-      approval_status:
-        docType === "K1_FINAL" ? "PENDING" : "NOT_REQUIRED",
-    });
-    if (docErr) return { ok: false, error: `Record failed (${docType}): ${docErr.message}` };
-    uploaded++;
-  }
-
-  revalidatePath("/purchase-orders");
-  return { ok: true, uploaded };
+  return data?.status ?? null;
 }
 
 // Generate short-lived signed URLs for a PO's documents (private buckets).
@@ -131,4 +82,307 @@ export async function getDocUrl(filePath: string): Promise<string | null> {
   const path = filePath.slice(slashIdx + 1);
   const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 300);
   return data?.signedUrl ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// (create) — SCM / ADMIN draft a PO
+// ---------------------------------------------------------------------------
+export async function savePurchaseOrder(formData: FormData): Promise<ActionResult> {
+  const profile = await getCurrentUser();
+  if (!profile) return { ok: false, error: "Not signed in" };
+  if (!PO_DRAFT_CREATORS.includes(profile.role as never))
+    return { ok: false, error: "Only SCM or Admin can draft a PO" };
+
+  const supabase = await createClient();
+
+  const poNumber = String(formData.get("po_number") || "").trim();
+  const supplierId = String(formData.get("supplier_id") || "").trim() || null;
+  const productGroup = String(formData.get("product_group") || "").trim() || null;
+  const expectedAmount = formData.get("expected_invoice_amount")
+    ? Number(formData.get("expected_invoice_amount"))
+    : null;
+  const invoiceCurrency = String(formData.get("invoice_currency") || "MYR").trim() || "MYR";
+  const depositPercent = formData.get("deposit_percent")
+    ? Number(formData.get("deposit_percent"))
+    : null;
+  const paymentTerms = String(formData.get("payment_terms") || "").trim() || null;
+  const depositDueDate = String(formData.get("deposit_due_date") || "").trim() || null;
+  const balanceDueDate = String(formData.get("balance_due_date") || "").trim() || null;
+  const notes = String(formData.get("notes") || "").trim() || null;
+  const editingId = String(formData.get("po_id") || "").trim() || null;
+
+  // supplier_id is NOT NULL in the schema.
+  if (!supplierId) return { ok: false, error: "Supplier is required" };
+  if (depositPercent != null && (depositPercent < 0 || depositPercent > 100))
+    return { ok: false, error: "Deposit % must be between 0 and 100" };
+
+  const fields = {
+    po_number: poNumber || null,
+    supplier_id: supplierId,
+    product_group: productGroup,
+    expected_invoice_amount: expectedAmount,
+    invoice_currency: invoiceCurrency,
+    deposit_percent: depositPercent,
+    payment_terms: paymentTerms,
+    deposit_due_date: depositDueDate,
+    balance_due_date: balanceDueDate,
+    notes,
+  };
+
+  if (editingId) {
+    // Editing an existing draft — only allowed while still DRAFT.
+    const status = await getPoStatus(supabase, editingId);
+    if (status && status !== "DRAFT")
+      return { ok: false, error: "PO has advanced past draft and can no longer be edited here" };
+    const { error } = await supabase
+      .from("purchase_orders")
+      .update(fields)
+      .eq("id", editingId);
+    if (error) return { ok: false, error: error.message };
+  } else {
+    const { error } = await supabase.from("purchase_orders").insert({
+      ...fields,
+      status: "DRAFT" as const,
+      proposal_source: "MANUAL_SCM" as const,
+      proposed_by: profile.id,
+    });
+    if (error) return { ok: false, error: error.message };
+  }
+
+  revalidatePath("/purchase-orders");
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// DRAFT → PO_APPROVED — ACCOUNTS / ADMIN upload signed PO PDF, set po_number + targeted_eta
+// ---------------------------------------------------------------------------
+export async function approvePO(formData: FormData): Promise<ActionResult> {
+  const profile = await getCurrentUser();
+  if (!profile) return { ok: false, error: "Not signed in" };
+  const supabase = await createClient();
+
+  const poId = String(formData.get("po_id") || "").trim();
+  if (!poId) return { ok: false, error: "Missing PO" };
+
+  const status = await getPoStatus(supabase, poId);
+  if (status !== "DRAFT")
+    return { ok: false, error: `This action is only valid from Draft (current: ${status})` };
+  if (!canActOnState(profile.role, "DRAFT"))
+    return { ok: false, error: "Only Accounts or Admin can approve a PO" };
+
+  const poNumber = String(formData.get("po_number") || "").trim();
+  const targetedEta = String(formData.get("targeted_eta") || "").trim() || null;
+  const file = formData.get("file_po");
+
+  if (!poNumber) return { ok: false, error: "PO number is required" };
+  if (!isFile(file)) return { ok: false, error: "Signed PO PDF is required" };
+
+  const upErr = await uploadDoc(supabase, poId, "PO_PDF", file, profile.id);
+  if (upErr) return { ok: false, error: upErr };
+
+  const { error } = await supabase
+    .from("purchase_orders")
+    .update({
+      po_number: poNumber,
+      targeted_eta: targetedEta,
+      status: "PO_APPROVED",
+      approved_by: profile.id,
+      approved_at: new Date().toISOString(),
+    })
+    .eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/purchase-orders");
+  revalidatePath(`/purchase-orders/${poId}`);
+  return { ok: true, uploaded: 1 };
+}
+
+// ---------------------------------------------------------------------------
+// PO_APPROVED → INVOICE_RECEIVED — SCM / ADMIN upload supplier invoice + key amount/number/date
+// ---------------------------------------------------------------------------
+export async function recordInvoice(formData: FormData): Promise<ActionResult> {
+  const profile = await getCurrentUser();
+  if (!profile) return { ok: false, error: "Not signed in" };
+  const supabase = await createClient();
+
+  const poId = String(formData.get("po_id") || "").trim();
+  if (!poId) return { ok: false, error: "Missing PO" };
+
+  const status = await getPoStatus(supabase, poId);
+  if (status !== "PO_APPROVED")
+    return { ok: false, error: `This action is only valid from PO Approved (current: ${status})` };
+  if (!canActOnState(profile.role, "PO_APPROVED"))
+    return { ok: false, error: "Only SCM or Admin can record the supplier invoice" };
+
+  const invoiceNumber = String(formData.get("invoice_number") || "").trim();
+  const invoiceAmount = formData.get("invoice_amount")
+    ? Number(formData.get("invoice_amount"))
+    : null;
+  const invoiceDate = String(formData.get("invoice_date") || "").trim() || null;
+  const paymentTerms = String(formData.get("payment_terms") || "").trim() || null;
+  const file = formData.get("file_invoice");
+
+  if (!invoiceNumber) return { ok: false, error: "Invoice number is required" };
+  if (invoiceAmount == null || Number.isNaN(invoiceAmount))
+    return { ok: false, error: "Invoice amount is required" };
+  if (!isFile(file)) return { ok: false, error: "Supplier invoice file is required" };
+
+  const upErr = await uploadDoc(supabase, poId, "SUPPLIER_INVOICE", file, profile.id);
+  if (upErr) return { ok: false, error: upErr };
+
+  const update: Record<string, unknown> = {
+    invoice_number: invoiceNumber,
+    invoice_amount: invoiceAmount,
+    invoice_date: invoiceDate,
+    status: "INVOICE_RECEIVED",
+  };
+  if (paymentTerms) update.payment_terms = paymentTerms;
+
+  const { error } = await supabase.from("purchase_orders").update(update).eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/purchase-orders");
+  revalidatePath(`/purchase-orders/${poId}`);
+  return { ok: true, uploaded: 1 };
+}
+
+// ---------------------------------------------------------------------------
+// INVOICE_RECEIVED → SHIPPED — LOGISTICS / ADMIN upload BL + K1_FINAL, set actual_eta
+// ---------------------------------------------------------------------------
+export async function markShipped(formData: FormData): Promise<ActionResult> {
+  const profile = await getCurrentUser();
+  if (!profile) return { ok: false, error: "Not signed in" };
+  const supabase = await createClient();
+
+  const poId = String(formData.get("po_id") || "").trim();
+  if (!poId) return { ok: false, error: "Missing PO" };
+
+  const status = await getPoStatus(supabase, poId);
+  if (status !== "INVOICE_RECEIVED")
+    return { ok: false, error: `This action is only valid from Invoice Received (current: ${status})` };
+  if (!canActOnState(profile.role, "INVOICE_RECEIVED"))
+    return { ok: false, error: "Only Logistics or Admin can mark a PO shipped" };
+
+  const actualEta = String(formData.get("actual_eta") || "").trim() || null;
+  const fileBl = formData.get("file_bl");
+  const fileK1 = formData.get("file_k1");
+
+  // BL + K1_FINAL are mandatory to ship. Allow either to already exist on the PO.
+  const { data: existingDocs } = await supabase
+    .from("po_documents")
+    .select("doc_type")
+    .eq("po_id", poId);
+  const have = new Set((existingDocs ?? []).map((d) => d.doc_type));
+
+  if (!isFile(fileBl) && !have.has("BL"))
+    return { ok: false, error: "Bill of Lading (BL) is required to ship" };
+  if (!isFile(fileK1) && !have.has("K1_FINAL"))
+    return { ok: false, error: "K1 (final) is required to ship" };
+
+  if (isFile(fileBl)) {
+    const e = await uploadDoc(supabase, poId, "BL", fileBl, profile.id);
+    if (e) return { ok: false, error: e };
+  }
+  if (isFile(fileK1)) {
+    const e = await uploadDoc(supabase, poId, "K1_FINAL", fileK1, profile.id);
+    if (e) return { ok: false, error: e };
+  }
+
+  const { error } = await supabase
+    .from("purchase_orders")
+    .update({
+      actual_eta: actualEta,
+      status: "SHIPPED",
+      issued_by: profile.id,
+      issued_at: new Date().toISOString(),
+    })
+    .eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/purchase-orders");
+  revalidatePath(`/purchase-orders/${poId}`);
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// SHIPPED → RECEIVED — WAREHOUSE / ADMIN. GATED: BL + K1_FINAL present AND balance_remaining = 0.
+// ---------------------------------------------------------------------------
+export async function markReceived(formData: FormData): Promise<ActionResult> {
+  const profile = await getCurrentUser();
+  if (!profile) return { ok: false, error: "Not signed in" };
+  const supabase = await createClient();
+
+  const poId = String(formData.get("po_id") || "").trim();
+  if (!poId) return { ok: false, error: "Missing PO" };
+
+  const status = await getPoStatus(supabase, poId);
+  if (status !== "SHIPPED")
+    return { ok: false, error: `This action is only valid from Shipped (current: ${status})` };
+  if (!canActOnState(profile.role, "SHIPPED"))
+    return { ok: false, error: "Only Warehouse or Admin can mark goods received" };
+
+  // --- HARD GATE 1: required documents ---
+  const { data: docs } = await supabase
+    .from("po_documents")
+    .select("doc_type")
+    .eq("po_id", poId);
+  const have = new Set((docs ?? []).map((d) => d.doc_type));
+  const missing: string[] = [];
+  if (!have.has("BL")) missing.push("Bill of Lading (BL)");
+  if (!have.has("K1_FINAL")) missing.push("K1 (final)");
+  if (missing.length)
+    return { ok: false, error: `Cannot receive — missing: ${missing.join(", ")}` };
+
+  // --- HARD GATE 2: balance fully paid ---
+  const { data: bal } = await supabase
+    .from("v_po_balance")
+    .select("balance_remaining")
+    .eq("po_id", poId)
+    .maybeSingle();
+  const remaining = Number(bal?.balance_remaining ?? 0);
+  if (remaining !== 0) {
+    return {
+      ok: false,
+      error: `Cannot receive — outstanding balance of ${remaining.toLocaleString("en-MY", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })} must be fully paid by Finance first`,
+    };
+  }
+
+  const remark = String(formData.get("remark") || "").trim();
+  const proof = formData.get("file_proof");
+
+  // Optional proof photo → receipt-photos bucket (no matching doc_type enum value,
+  // so stored in the bucket only; not registered in po_documents).
+  if (isFile(proof)) {
+    const path = `${poId}/receipt/${Date.now()}_${slug(proof.name)}`;
+    const buffer = Buffer.from(await proof.arrayBuffer());
+    const { error: upErr } = await supabase.storage
+      .from("receipt-photos")
+      .upload(path, buffer, {
+        contentType: proof.type || "application/octet-stream",
+        upsert: true,
+      });
+    if (upErr) return { ok: false, error: `Proof photo upload failed: ${upErr.message}` };
+  }
+
+  // Append the receipt remark to notes (no dedicated column at this increment).
+  const update: Record<string, unknown> = { status: "RECEIVED" };
+  if (remark) {
+    const { data: cur } = await supabase
+      .from("purchase_orders")
+      .select("notes")
+      .eq("id", poId)
+      .maybeSingle();
+    const prev = cur?.notes ? `${cur.notes}\n` : "";
+    update.notes = `${prev}[Received] ${remark}`;
+  }
+
+  const { error } = await supabase.from("purchase_orders").update(update).eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/purchase-orders");
+  revalidatePath(`/purchase-orders/${poId}`);
+  return { ok: true };
 }
