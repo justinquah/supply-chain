@@ -3,8 +3,9 @@ import { createClient, requireRole } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCurrency } from "@/lib/constants";
 import { RecordPaymentForm } from "./record-payment-form";
-import { PaymentCalendar, type PaidEntry, type DueEntry } from "./payment-calendar";
+import { PaymentCalendar, type PaidEntry, type DueEntry, type BaEntry } from "./payment-calendar";
 import { getSlipUrl } from "./actions";
+import { EditBaTermsFormWrapper } from "./edit-ba-wrapper";
 
 // ---------------------------------------------------------------------------
 // Money helpers
@@ -31,8 +32,8 @@ function fmtDate(d: string | null | undefined) {
   });
 }
 
-// Asia/KL "today" for initial calendar month
-function klToday(): { year: number; month: number } {
+// Asia/KL "today" for initial calendar month and BA calculations
+function klTodayInfo(): { year: number; month: number; todayIso: string } {
   const dt = new Date().toLocaleString("en-MY", {
     timeZone: "Asia/Kuala_Lumpur",
     year: "numeric",
@@ -41,8 +42,11 @@ function klToday(): { year: number; month: number } {
   });
   // "DD/MM/YYYY" in en-MY locale
   const parts = dt.split(/[\/ ,]+/).map(Number);
-  // toLocaleString with numeric year/month/day typically: day/month/year
-  return { year: parts[2], month: parts[1] - 1 };
+  const year = parts[2];
+  const month = parts[1] - 1; // 0-indexed
+  const day = parts[0];
+  const todayIso = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  return { year, month, todayIso };
 }
 
 // Convert a DB date string (or Date) to "YYYY-MM-DD" in Asia/KL
@@ -62,17 +66,14 @@ export default async function FinancePage() {
 
   const supabase = await createClient();
 
-  // (a) Finance inbox: POs with outstanding balance
-  // Join purchase_orders + v_po_balance + supplier profile.
-  // v_po_balance is a view on purchase_orders so we query them separately to
-  // avoid ORM type gymnastics, then merge.
+  // (a) Finance inbox: POs with outstanding balance + (c) calendar data
   const [{ data: posRaw }, { data: balancesRaw }, { data: paymentsRaw }] =
     await Promise.all([
       supabase
         .from("purchase_orders")
         .select(
           "id, po_number, invoice_currency, deposit_percent, payment_terms, " +
-            "deposit_due_date, balance_due_date, " +
+            "deposit_due_date, balance_due_date, actual_eta, targeted_eta, " +
             "supplier:profiles!supplier_id(name, company_name)"
         )
         .order("created_at", { ascending: false }),
@@ -81,7 +82,10 @@ export default async function FinancePage() {
         .select("po_id, total_amount, amount_paid, balance_remaining"),
       supabase
         .from("payments")
-        .select("id, po_id, amount, currency, paid_at, due_date, notes, payment_slip_path")
+        .select(
+          "id, po_id, amount, currency, paid_at, due_date, notes, payment_slip_path, " +
+            "payment_method, ba_term_days, ba_due_date"
+        )
         .eq("status", "PAID")
         .order("paid_at", { ascending: false }),
     ]);
@@ -93,7 +97,7 @@ export default async function FinancePage() {
     amount_paid: number;
     balance_remaining: number;
   }[];
-  const payments = (paymentsRaw ?? []) as {
+  type PaymentRow = {
     id: string;
     po_id: string;
     amount: number;
@@ -102,12 +106,18 @@ export default async function FinancePage() {
     due_date: string | null;
     notes: string | null;
     payment_slip_path: string | null;
-  }[];
+    payment_method: "BANK_BALANCE" | "BANKERS_ACCEPTANCE";
+    ba_term_days: number | null;
+    ba_due_date: string | null;
+  };
+  const payments = (paymentsRaw ?? []) as unknown as PaymentRow[];
 
   // Build balance lookup
   const balMap = new Map(balances.map((b) => [b.po_id, b]));
+  // Build po lookup for easy number resolution
+  const poMap = new Map(pos.map((po) => [po.id, po]));
   // Build payments-by-po lookup
-  const payByPo = new Map<string, typeof payments>();
+  const payByPo = new Map<string, PaymentRow[]>();
   for (const p of payments) {
     const arr = payByPo.get(p.po_id) ?? [];
     arr.push(p);
@@ -130,16 +140,19 @@ export default async function FinancePage() {
       return aDate < bDate ? -1 : aDate > bDate ? 1 : 0;
     });
 
-  // (c) Calendar data — derive paid entries and due entries
+  // (c) Calendar data
+  const { year: klYear, month: klMonth, todayIso } = klTodayInfo();
+  const todayEpoch = new Date(todayIso).getTime();
+
+  // Paid entries: BANK_BALANCE payments on their paid_at date (actual cash out)
   const paidEntries: PaidEntry[] = payments
-    .filter((p) => p.paid_at != null)
+    .filter((p) => p.paid_at != null && p.payment_method === "BANK_BALANCE")
     .map((p) => ({
       date: toKlDate(p.paid_at)!,
       amount: Number(p.amount),
       currency: p.currency ?? "MYR",
       poId: p.po_id,
-      poNumber:
-        pos.find((po) => po.id === p.po_id)?.po_number ?? null,
+      poNumber: poMap.get(p.po_id)?.po_number ?? null,
     }));
 
   // Due entries: for each PO with balance_remaining > 0, compute unpaid legs
@@ -170,7 +183,7 @@ export default async function FinancePage() {
       });
     }
 
-    // Balance leg: unpaid when amount_paid < total_amount (i.e., balance not fully settled)
+    // Balance leg: unpaid when amount_paid < total_amount
     if (
       balanceAmount > 0 &&
       po.balance_due_date &&
@@ -186,7 +199,30 @@ export default async function FinancePage() {
     }
   }
 
-  const { year: klYear, month: klMonth } = klToday();
+  // BA entries: BANKERS_ACCEPTANCE payments on their ba_due_date
+  const baEntries: BaEntry[] = payments
+    .filter(
+      (p) =>
+        p.payment_method === "BANKERS_ACCEPTANCE" && p.ba_due_date != null
+    )
+    .map((p) => {
+      const dueDateEpoch = new Date(p.ba_due_date!).getTime();
+      const daysUntil = Math.round((dueDateEpoch - todayEpoch) / 86400000);
+      return {
+        date: p.ba_due_date!,
+        amount: Number(p.amount),
+        currency: p.currency ?? "MYR",
+        poId: p.po_id,
+        poNumber: poMap.get(p.po_id)?.po_number ?? null,
+        paymentId: p.id,
+        daysUntil,
+      };
+    });
+
+  // Upcoming BA list: ba_due_date >= today, sorted by date
+  const upcomingBas = baEntries
+    .filter((e) => e.daysUntil >= 0)
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
   // Generate signed URLs for payment slips (only for slips that exist)
   const slipUrls = new Map<string, string>();
@@ -309,6 +345,9 @@ export default async function FinancePage() {
                   supplier?.company_name || supplier?.name || null;
                 const cur = po.invoice_currency || "MYR";
                 const poPayments = payByPo.get(po.id) ?? [];
+                // COALESCE(actual_eta, targeted_eta) for BA base date
+                const poEta: string | null =
+                  po.actual_eta ?? po.targeted_eta ?? null;
 
                 return (
                   <div
@@ -343,39 +382,14 @@ export default async function FinancePage() {
                     {/* Existing payments */}
                     {poPayments.length > 0 && (
                       <div className="space-y-1">
-                        {poPayments.map((p) => {
-                          const slipUrl = slipUrls.get(p.id);
-                          return (
-                            <div
-                              key={p.id}
-                              className="flex items-center gap-3 text-sm text-gray-700 bg-emerald-50 rounded px-3 py-1.5"
-                            >
-                              <span className="text-emerald-700 font-medium tabular-nums">
-                                {money(p.amount, p.currency)}
-                              </span>
-                              <span className="text-gray-500">
-                                {p.paid_at
-                                  ? fmtDate(p.paid_at)
-                                  : "—"}
-                              </span>
-                              {p.notes && (
-                                <span className="text-gray-500 text-xs">
-                                  {p.notes}
-                                </span>
-                              )}
-                              {slipUrl && (
-                                <a
-                                  href={slipUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-xs text-brand hover:underline"
-                                >
-                                  Slip
-                                </a>
-                              )}
-                            </div>
-                          );
-                        })}
+                        {poPayments.map((p) => (
+                          <PaymentRow
+                            key={p.id}
+                            payment={p}
+                            slipUrl={slipUrls.get(p.id) ?? null}
+                            isFinance={isFinance}
+                          />
+                        ))}
                       </div>
                     )}
 
@@ -384,6 +398,7 @@ export default async function FinancePage() {
                       poNumber={po.po_number ?? null}
                       supplierName={supplierName}
                       isFinance={isFinance}
+                      poEta={poEta}
                     />
                   </div>
                 );
@@ -421,35 +436,14 @@ export default async function FinancePage() {
                           Fully paid — {money(bal?.amount_paid, cur)}
                         </span>
                       </div>
-                      {poPayments.map((p) => {
-                        const slipUrl = slipUrls.get(p.id);
-                        return (
-                          <div
-                            key={p.id}
-                            className="flex items-center gap-3 text-sm text-gray-600"
-                          >
-                            <span className="tabular-nums">
-                              {money(p.amount, p.currency)}
-                            </span>
-                            <span className="text-gray-400">
-                              {p.paid_at ? fmtDate(p.paid_at) : "—"}
-                            </span>
-                            {p.notes && (
-                              <span className="text-xs text-gray-400">{p.notes}</span>
-                            )}
-                            {slipUrl && (
-                              <a
-                                href={slipUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-xs text-brand hover:underline"
-                              >
-                                Slip
-                              </a>
-                            )}
-                          </div>
-                        );
-                      })}
+                      {poPayments.map((p) => (
+                        <PaymentRow
+                          key={p.id}
+                          payment={p}
+                          slipUrl={slipUrls.get(p.id) ?? null}
+                          isFinance={isFinance}
+                        />
+                      ))}
                     </div>
                   );
                 })}
@@ -467,11 +461,121 @@ export default async function FinancePage() {
           <PaymentCalendar
             paidEntries={paidEntries}
             dueEntries={dueEntries}
+            baEntries={baEntries}
+            upcomingBas={upcomingBas}
             initialYear={klYear}
             initialMonth={klMonth}
+            todayKl={todayIso}
           />
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inline payment row with optional BA edit
+// ---------------------------------------------------------------------------
+type PaymentRowProps = {
+  payment: {
+    id: string;
+    po_id: string;
+    amount: number;
+    currency: string;
+    paid_at: string | null;
+    due_date: string | null;
+    notes: string | null;
+    payment_slip_path: string | null;
+    payment_method: "BANK_BALANCE" | "BANKERS_ACCEPTANCE";
+    ba_term_days: number | null;
+    ba_due_date: string | null;
+  };
+  slipUrl: string | null;
+  isFinance: boolean;
+};
+
+function PaymentRow({ payment: p, slipUrl, isFinance }: PaymentRowProps) {
+  const isBa = p.payment_method === "BANKERS_ACCEPTANCE";
+
+  return (
+    <div
+      className={
+        "rounded px-3 py-2 space-y-1 " +
+        (isBa
+          ? "bg-blue-50 border border-blue-100"
+          : "bg-emerald-50 border border-emerald-100")
+      }
+    >
+      <div className="flex items-center gap-3 text-sm flex-wrap">
+        <span
+          className={
+            "font-medium tabular-nums " +
+            (isBa ? "text-blue-800" : "text-emerald-700")
+          }
+        >
+          {p.currency !== "MYR" ? `${p.currency} ` : ""}
+          {formatCurrency(Number(p.amount))}
+        </span>
+        <span
+          className={
+            "text-xs px-1.5 py-0.5 rounded font-medium " +
+            (isBa
+              ? "bg-blue-100 text-blue-700"
+              : "bg-emerald-100 text-emerald-700")
+          }
+        >
+          {isBa ? "BA" : "Bank"}
+        </span>
+        <span className="text-gray-500 text-xs">
+          paid {p.paid_at ? fmtDate(p.paid_at) : "—"}
+        </span>
+        {p.notes && (
+          <span className="text-gray-400 text-xs">{p.notes}</span>
+        )}
+        {slipUrl && (
+          <a
+            href={slipUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs text-brand hover:underline"
+          >
+            Slip
+          </a>
+        )}
+      </div>
+      {isBa && p.ba_due_date && (
+        <div className="text-xs text-blue-700">
+          BA due: <strong>{fmtDate(p.ba_due_date)}</strong>
+          {p.ba_term_days != null && (
+            <span className="ml-1 text-blue-500">({p.ba_term_days}d term)</span>
+          )}
+          {isFinance && (
+            <EditBaInline
+              paymentId={p.id}
+              currentTermDays={p.ba_term_days}
+              currentDueDate={p.ba_due_date}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EditBaInline({
+  paymentId,
+  currentTermDays,
+  currentDueDate,
+}: {
+  paymentId: string;
+  currentTermDays: number | null;
+  currentDueDate: string | null;
+}) {
+  return (
+    <EditBaTermsFormWrapper
+      paymentId={paymentId}
+      currentTermDays={currentTermDays}
+      currentDueDate={currentDueDate}
+    />
   );
 }
