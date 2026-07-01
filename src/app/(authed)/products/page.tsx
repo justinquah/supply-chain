@@ -1,6 +1,8 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getCurrentUser } from "@/lib/supabase/server";
 import { Card, CardContent } from "@/components/ui/card";
 import { LaunchDateCell } from "./launch-date-cell";
+import { AddProductForm } from "./add-product-form";
+import { ImportProductsForm } from "./import-products-form";
 
 function money(n: number | null, cur: string | null) {
   if (n == null) return "—";
@@ -18,6 +20,8 @@ export default async function ProductsPage({
   const supabase = await createClient();
   const sp = await searchParams;
   const showInactive = sp.show === "all";
+  const profile = await getCurrentUser();
+  const canManage = !!profile && (["SCM", "ADMIN"] as string[]).includes(profile.role);
 
   let query = supabase
     .from("products")
@@ -79,6 +83,13 @@ export default async function ProductsPage({
           </a>
         </div>
       </div>
+
+      {canManage && (
+        <div className="grid md:grid-cols-2 gap-4">
+          <AddProductForm />
+          <ImportProductsForm />
+        </div>
+      )}
 
       <div className="space-y-4">
         {families.map((fam) => {
