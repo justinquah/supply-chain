@@ -104,8 +104,8 @@ Plans:
 Plans:
 
 - [x] 04A: PO state machine + per-stage role-gated UIs (SCM draft → ACCOUNTS approve → SCM invoice → LOGISTICS ship → WAREHOUSE receive), stepper, document storage, RECEIVED gate (BL+K1+balance==0) — ✓ shipped to prod 2026-06-23
-- [ ] 04B: Finance — inbox (balance > 0), record payment (**Bank balance / Banker's Acceptance**, BA term + due date), running balance (v_po_balance), amount-paid / to-be-paid / **BA-due calendar** + upcoming-BA list — 🔨 building (unblocks the RECEIVED gate once balances clear)
-- [ ] 04C: Logistics clearance detail + Warehouse goods-receipt qty/damage/proof + container arrival/unload tracking + **Warehouse arrival calendar** (WHS-01..04)
+- [x] 04B: Finance — inbox (balance > 0), record payment (**Bank balance / Banker's Acceptance**, BA term + due date), running balance (v_po_balance), amount-paid / to-be-paid / **BA-due calendar** + upcoming-BA list — ✓ shipped to prod 2026-06-23 (Finance test login created). Also fixed a latent auth bug (0016: profiles.role nullable + bulletproof handle_new_user) that would have broken Admin invite/AUTH-03.
+- [ ] 04C: Warehouse goods-receipt qty/damage/proof + container arrival/unload tracking + **Warehouse arrival calendar** (WHS-01..04) — 🔨 building (migration 0017 applied). Logistics clearance detail still queued.
 - [ ] 04D: In-app notification bell for hand-offs (incl. WAREHOUSE incoming-ETA) (NTF-01)
 
 ## Progress
