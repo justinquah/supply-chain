@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { Card, CardContent } from "@/components/ui/card";
+import { LaunchDateCell } from "./launch-date-cell";
 
 function money(n: number | null, cur: string | null) {
   if (n == null) return "—";
@@ -21,14 +22,14 @@ export default async function ProductsPage({
   let query = supabase
     .from("products")
     .select(
-      "id, sku, name, product_family, variation, pack_size, payment_terms, is_main, is_active, unit_cost, cost_currency, product_categories(name), product_suppliers(unit_cost, cost_currency, is_primary, profiles(name, company_name))"
+      "id, sku, name, product_family, variation, pack_size, launch_date, is_main, is_active, unit_cost, cost_currency, product_categories(name), product_suppliers(unit_cost, cost_currency, is_primary, profiles(name, company_name))"
     )
     .order("variation", { ascending: true });
   if (!showInactive) query = query.eq("is_active", true);
 
   const [{ data: products }, { data: groups }] = await Promise.all([
     query,
-    supabase.from("product_groups").select("name, loading_capacity, payment_terms, product_categories(name)"),
+    supabase.from("product_groups").select("name, loading_capacity, product_categories(name)"),
   ]);
 
   const groupMeta = new Map<string, any>();
@@ -51,6 +52,10 @@ export default async function ProductsPage({
           <p className="text-sm text-gray-500 mt-1">
             By product range → variation · load size is the container total for the
             whole range
+          </p>
+          <p className="text-xs text-gray-400 mt-1">
+            Launch date drives the KPI new-SKU exclusion — a SKU only counts toward
+            Overstock %/OOS % more than 6 months after launch.
           </p>
         </div>
         <div className="flex gap-2 text-sm">
@@ -81,7 +86,6 @@ export default async function ProductsPage({
           const meta = groupMeta.get(fam);
           const loadSize = meta?.loading_capacity;
           const category = meta?.product_categories?.name || items[0]?.product_categories?.name;
-          const paymentTerms = meta?.payment_terms;
           return (
             <Card key={fam}>
               <div className="px-4 py-3 border-b border-gray-100 flex flex-wrap items-center justify-between gap-2 bg-gray-50/60 rounded-t-lg">
@@ -101,12 +105,6 @@ export default async function ProductsPage({
                         : "—"}
                     </div>
                   </div>
-                  <div className="text-right max-w-[220px]">
-                    <div className="text-xs text-gray-500">Payment terms</div>
-                    <div className="text-sm text-gray-700">
-                      {paymentTerms || <span className="text-gray-300">not set</span>}
-                    </div>
-                  </div>
                 </div>
               </div>
               <CardContent className="p-0">
@@ -116,7 +114,8 @@ export default async function ProductsPage({
                       <th className="py-2 pl-4 pr-3 font-medium">Variation</th>
                       <th className="py-2 px-3 font-medium">Primary supplier</th>
                       <th className="py-2 px-3 font-medium text-right">Cost/unit</th>
-                      <th className="py-2 pr-4 pl-3 font-medium">Pack</th>
+                      <th className="py-2 px-3 font-medium">Pack</th>
+                      <th className="py-2 pr-4 pl-3 font-medium">Launch date</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -162,8 +161,14 @@ export default async function ProductsPage({
                               primary?.cost_currency ?? p.cost_currency
                             )}
                           </td>
-                          <td className="py-2 pr-4 pl-3 text-gray-500 text-xs">
+                          <td className="py-2 px-3 text-gray-500 text-xs">
                             {p.pack_size || "—"}
+                          </td>
+                          <td className="py-2 pr-4 pl-3">
+                            <LaunchDateCell
+                              productId={p.id}
+                              launchDate={p.launch_date}
+                            />
                           </td>
                         </tr>
                       );
