@@ -17,6 +17,7 @@ const ALL_NAV = [
     roles: ["WAREHOUSE", "ADMIN", "SCM", "LOGISTICS"],
   },
   { href: "/products", label: "Products", roles: null },
+  { href: "/suppliers", label: "Suppliers", roles: ["SCM", "ADMIN"] },
   { href: "/stock", label: "Stock Levels", roles: null },
   { href: "/settings", label: "Settings", roles: null },
 ];
