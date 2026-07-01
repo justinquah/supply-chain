@@ -12,6 +12,83 @@ import {
 
 type Result = { ok: boolean; error?: string };
 
+export type ProductOption = { id: string; label: string };
+
+type ShippingLine = { key: number; productId: string; quantity: string };
+
+let lineKeySeq = 0;
+function newLine(): ShippingLine {
+  return { key: ++lineKeySeq, productId: "", quantity: "" };
+}
+
+// Repeatable product + quantity rows for the SHIPPED form. Serialized as
+// parallel line_product_id[] / line_quantity[] form fields (see
+// parseShippingLines in actions.ts).
+function ShippingLines({ products }: { products: ProductOption[] }) {
+  const [lines, setLines] = useState<ShippingLine[]>([newLine()]);
+
+  function update(key: number, patch: Partial<ShippingLine>) {
+    setLines((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)));
+  }
+  function remove(key: number) {
+    setLines((prev) => (prev.length > 1 ? prev.filter((l) => l.key !== key) : prev));
+  }
+  function add() {
+    setLines((prev) => [...prev, newLine()]);
+  }
+
+  return (
+    <div className="space-y-2">
+      <span className="text-xs text-gray-500 block">
+        Shipping lines (product + quantity being shipped — optional)
+      </span>
+      <div className="space-y-2">
+        {lines.map((line) => (
+          <div key={line.key} className="flex items-center gap-2">
+            <select
+              name="line_product_id"
+              value={line.productId}
+              onChange={(e) => update(line.key, { productId: e.target.value })}
+              className={inputCls}
+            >
+              <option value="">— select product —</option>
+              {products.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+            <input
+              name="line_quantity"
+              type="number"
+              min="1"
+              value={line.quantity}
+              onChange={(e) => update(line.key, { quantity: e.target.value })}
+              className={inputCls + " w-28 shrink-0"}
+              placeholder="qty"
+            />
+            <button
+              type="button"
+              onClick={() => remove(line.key)}
+              disabled={lines.length === 1}
+              className="text-xs text-gray-400 hover:text-red-600 disabled:opacity-30 disabled:hover:text-gray-400 shrink-0"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={add}
+        className="text-xs text-brand hover:underline"
+      >
+        + Add line
+      </button>
+    </div>
+  );
+}
+
 const inputCls =
   "w-full border border-gray-300 rounded-md px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40";
 
@@ -104,6 +181,8 @@ type Props = {
   balanceRemaining: number;
   hasBl: boolean;
   hasK1: boolean;
+  // Active products for the SHIPPED-stage shipping-lines picker.
+  products: ProductOption[];
 };
 
 export function StageForms({
@@ -113,6 +192,7 @@ export function StageForms({
   balanceRemaining,
   hasBl,
   hasK1,
+  products,
 }: Props) {
   // DRAFT → PO_APPROVED (Accounts/Admin)
   if (status === "DRAFT") {
@@ -193,6 +273,13 @@ export function StageForms({
             Re-upload only if replacing.
           </p>
         )}
+        <ShippingLines products={products} />
+        <p className="text-xs text-gray-400">
+          Shipping lines create the PO&rsquo;s incoming stock (used by the
+          dashboard&rsquo;s Incoming columns), dated to the actual ETA above
+          (falls back to the targeted ETA if left blank). Re-submitting
+          replaces any lines already captured for this PO.
+        </p>
       </StageForm>
     );
   }

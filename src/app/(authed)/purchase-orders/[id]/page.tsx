@@ -70,27 +70,48 @@ export default async function PurchaseOrderDetailPage({
   const profile = await getCurrentUser();
   const role = profile?.role ?? "";
 
-  const [{ data: po }, { data: bal }] = await Promise.all([
-    supabase
-      .from("purchase_orders")
-      .select(
-        "id, po_number, status, currency, invoice_currency, product_group, " +
-          "expected_invoice_amount, deposit_percent, payment_terms, deposit_due_date, balance_due_date, " +
-          "invoice_amount, invoice_number, invoice_date, targeted_eta, actual_eta, notes, created_at, " +
-          "container_arrived_at, unload_completed_at, received_qty, damaged_qty, receipt_remark, receipt_proof_path, " +
-          "supplier:profiles!supplier_id(name, company_name), " +
-          "po_documents(id, doc_type, file_path, file_name, uploaded_at)"
-      )
-      .eq("id", id)
-      .maybeSingle(),
-    supabase
-      .from("v_po_balance")
-      .select("total_amount, amount_paid, balance_remaining")
-      .eq("po_id", id)
-      .maybeSingle(),
-  ]);
+  const [{ data: po }, { data: bal }, { data: products }, { data: incoming }] =
+    await Promise.all([
+      supabase
+        .from("purchase_orders")
+        .select(
+          "id, po_number, status, currency, invoice_currency, product_group, " +
+            "expected_invoice_amount, deposit_percent, payment_terms, deposit_due_date, balance_due_date, " +
+            "invoice_amount, invoice_number, invoice_date, targeted_eta, actual_eta, notes, created_at, " +
+            "container_arrived_at, unload_completed_at, received_qty, damaged_qty, receipt_remark, receipt_proof_path, " +
+            "supplier:profiles!supplier_id(name, company_name), " +
+            "po_documents(id, doc_type, file_path, file_name, uploaded_at)"
+        )
+        .eq("id", id)
+        .maybeSingle(),
+      supabase
+        .from("v_po_balance")
+        .select("total_amount, amount_paid, balance_remaining")
+        .eq("po_id", id)
+        .maybeSingle(),
+      // Active products for the SHIPPED-stage shipping-lines picker.
+      supabase
+        .from("products")
+        .select("id, sku, name, product_family, variation")
+        .eq("is_active", true)
+        .order("name"),
+      // This PO's shipping lines / incoming stock (shown read-only below).
+      supabase
+        .from("incoming_stock")
+        .select("id, quantity, expected_date, status, notes, product:products(sku, name, product_family, variation)")
+        .eq("po_id", id)
+        .order("expected_date"),
+    ]);
 
   if (!po) notFound();
+
+  const productOptions = (products ?? []).map((p: any) => ({
+    id: p.id,
+    label: p.product_family
+      ? `${p.product_family}${p.variation ? " — " + p.variation : ""} (${p.sku})`
+      : `${p.name} (${p.sku})`,
+  }));
+  const incomingRows = (incoming ?? []) as any[];
 
   // The joined supplier / po_documents shapes aren't in the generated DB types,
   // so treat the row loosely (consistent with the list page).
@@ -253,6 +274,69 @@ export default async function PurchaseOrderDetailPage({
         </Card>
       )}
 
+      {/* Shipping lines / incoming stock — shown once Logistics has captured any */}
+      {incomingRows.length > 0 && (
+        <Card>
+          <CardHeader className="flex-row items-center justify-between">
+            <CardTitle>Incoming / shipped lines</CardTitle>
+            <span className="text-xs text-gray-500">
+              Feeds the dashboard&rsquo;s Incoming columns until marked arrived
+            </span>
+          </CardHeader>
+          <CardContent className="p-0">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-gray-500 border-b border-gray-200">
+                  <th className="py-2 pl-4 pr-3 font-medium">Product</th>
+                  <th className="py-2 px-3 font-medium text-right">Qty</th>
+                  <th className="py-2 px-3 font-medium">Expected date</th>
+                  <th className="py-2 pr-4 pl-3 font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {incomingRows.map((row) => {
+                  const p = row.product as {
+                    sku?: string;
+                    name?: string;
+                    product_family?: string | null;
+                    variation?: string | null;
+                  } | null;
+                  const label = p?.product_family
+                    ? `${p.product_family}${p.variation ? " — " + p.variation : ""}`
+                    : p?.name || "—";
+                  return (
+                    <tr key={row.id} className="border-b border-gray-100">
+                      <td className="py-2 pl-4 pr-3 text-gray-900">
+                        {label}
+                        {p?.sku && (
+                          <span className="text-xs text-gray-400 ml-2">{p.sku}</span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 text-right tabular-nums">{row.quantity}</td>
+                      <td className="py-2 px-3">{date(row.expected_date)}</td>
+                      <td className="py-2 pr-4 pl-3">
+                        <span
+                          className={
+                            "text-[11px] px-2 py-0.5 rounded-full font-medium " +
+                            (row.status === "ARRIVED"
+                              ? "bg-emerald-100 text-emerald-700"
+                              : row.status === "CANCELLED"
+                                ? "bg-red-100 text-red-700"
+                                : "bg-amber-100 text-amber-700")
+                          }
+                        >
+                          {row.status}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Stage action OR read-only waiting note */}
       <Card>
         <CardHeader>
@@ -275,6 +359,7 @@ export default async function PurchaseOrderDetailPage({
               balanceRemaining={balanceRemaining}
               hasBl={docTypes.has("BL")}
               hasK1={docTypes.has("K1_FINAL")}
+              products={productOptions}
             />
           ) : (
             <p className="text-sm text-gray-600">

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient, getCurrentUser } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { PO_DRAFT_CREATORS, canActOnState } from "@/lib/po-workflow";
 
 // doc_type -> storage bucket
@@ -59,6 +60,24 @@ async function uploadDoc(
 
 function isFile(v: FormDataEntryValue | null): v is File {
   return !!v && typeof v !== "string" && (v as File).size > 0;
+}
+
+// Parse repeatable "Shipping lines" rows (product_id[] + quantity[]) submitted
+// by the SHIPPED-stage form. Rows with no product selected or a non-positive
+// quantity are dropped silently — shipping lines are optional (SPEC: do not
+// hard-block markShipped on zero lines).
+function parseShippingLines(formData: FormData): { productId: string; quantity: number }[] {
+  const productIds = formData.getAll("line_product_id").map((v) => String(v).trim());
+  const quantities = formData.getAll("line_quantity").map((v) => Number(v));
+  const lines: { productId: string; quantity: number }[] = [];
+  for (let i = 0; i < productIds.length; i++) {
+    const productId = productIds[i];
+    const quantity = quantities[i];
+    if (!productId) continue;
+    if (!Number.isFinite(quantity) || quantity <= 0) continue;
+    lines.push({ productId, quantity: Math.trunc(quantity) });
+  }
+  return lines;
 }
 
 // Fetch the PO's current status (used to enforce the transition is legal).
@@ -288,6 +307,14 @@ export async function markShipped(formData: FormData): Promise<ActionResult> {
     if (e) return { ok: false, error: e };
   }
 
+  // Fetch po_number + targeted_eta up front — needed for the incoming_stock
+  // expected_date fallback and notes, and read before the status update below.
+  const { data: poRow } = await supabase
+    .from("purchase_orders")
+    .select("po_number, targeted_eta")
+    .eq("id", poId)
+    .maybeSingle();
+
   const { error } = await supabase
     .from("purchase_orders")
     .update({
@@ -299,8 +326,38 @@ export async function markShipped(formData: FormData): Promise<ActionResult> {
     .eq("id", poId);
   if (error) return { ok: false, error: error.message };
 
+  // Shipping lines -> incoming_stock (dashboard's "Incoming" reads this table).
+  // incoming_stock RLS write is SCM/ADMIN only, so LOGISTICS writes go through
+  // the service-role client, gated by the canActOnState check above.
+  const lines = parseShippingLines(formData);
+  const expectedDate = actualEta || poRow?.targeted_eta || null;
+  if (lines.length > 0 && expectedDate) {
+    const admin = createAdminClient();
+    // Idempotent re-ship: clear any previously captured lines for this PO first.
+    const { error: delErr } = await admin
+      .from("incoming_stock")
+      .delete()
+      .eq("po_id", poId);
+    if (delErr) return { ok: false, error: `Failed to reset shipping lines: ${delErr.message}` };
+
+    const poNumber = poRow?.po_number || "";
+    const { error: insErr } = await admin.from("incoming_stock").insert(
+      lines.map((line) => ({
+        product_id: line.productId,
+        quantity: line.quantity,
+        expected_date: expectedDate,
+        po_id: poId,
+        status: "EXPECTED",
+        created_by: profile.id,
+        notes: poNumber ? `PO ${poNumber}` : null,
+      }))
+    );
+    if (insErr) return { ok: false, error: `Failed to record shipping lines: ${insErr.message}` };
+  }
+
   revalidatePath("/purchase-orders");
   revalidatePath(`/purchase-orders/${poId}`);
+  revalidatePath("/dashboard");
   return { ok: true };
 }
 
@@ -396,8 +453,22 @@ export async function markReceived(formData: FormData): Promise<ActionResult> {
   const { error } = await supabase.from("purchase_orders").update(update).eq("id", poId);
   if (error) return { ok: false, error: error.message };
 
+  // Clear this PO's incoming_stock rows so they drop off the dashboard's
+  // "Incoming" columns (which only count status='EXPECTED'). incoming_stock
+  // write RLS is SCM/ADMIN only, so the WAREHOUSE write goes through the
+  // service-role client, gated by the canActOnState check above.
+  const admin = createAdminClient();
+  const { error: arrivedErr } = await admin
+    .from("incoming_stock")
+    .update({ status: "ARRIVED" })
+    .eq("po_id", poId)
+    .eq("status", "EXPECTED");
+  if (arrivedErr)
+    return { ok: false, error: `Received recorded but failed to clear incoming stock: ${arrivedErr.message}` };
+
   revalidatePath("/purchase-orders");
   revalidatePath(`/purchase-orders/${poId}`);
   revalidatePath("/warehouse");
+  revalidatePath("/dashboard");
   return { ok: true };
 }
