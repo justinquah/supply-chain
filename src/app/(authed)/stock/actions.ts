@@ -46,47 +46,61 @@ export type ImportStockResult = {
 // Resolve a header value case/space-insensitively against a list of
 // candidate labels (the source Excel/CSV exports are inconsistent about
 // header naming and casing).
-function cell(row: Record<string, unknown>, keyMap: Map<string, string>, ...labels: string[]): unknown {
-  for (const label of labels) {
-    const actualKey = keyMap.get(label.trim().toLowerCase());
-    if (actualKey !== undefined && row[actualKey] !== undefined && row[actualKey] !== null) {
-      return row[actualKey];
-    }
-  }
-  return null;
-}
+const SKU_HEADERS = ["commodity code", "sku", "system product code", "item code", "product code"];
+// Quantity aliases in priority order (first present column wins). "Available quantity" is the
+// on-hand figure the SCM's inventory export reports.
+const QTY_HEADERS = ["available quantity", "inventory level", "quantity", "qty", "stock", "balance qty", "balance", "on hand"];
+const DATE_HEADERS = ["week_start", "week start", "date", "snapshot date"];
 
-function buildKeyMap(row: Record<string, unknown>): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const key of Object.keys(row)) {
-    map.set(key.trim().toLowerCase(), key);
-  }
-  return map;
-}
-
-const SKU_HEADERS = ["sku", "system product code", "item code"];
-const QTY_HEADERS = ["quantity", "qty", "stock"];
-const DATE_HEADERS = ["week_start", "date"];
-
-// Parse the first sheet of the uploaded workbook into { sku, qty, date? }[],
-// tolerating flexible header naming/casing.
+// Parse the first sheet into { sku, qty, date? }[]. Handles both single-row headers AND
+// two-row-header exports — e.g. the "Inventory Inquiry Export" where row 1 is group labels
+// ("Product information" / "Inventory information") and the real headers are on row 2
+// (SKU = "Commodity code", qty = "Available quantity"). We scan the first rows for a header
+// row that contains a recognised SKU column AND a quantity column, then read data below it.
 function parseStockRows(wb: XLSX.WorkBook): { sku: string; qty: number; date: string | null }[] {
   const sheet = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: null });
+  const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null });
+  const norm = (v: unknown) => String(v == null ? "" : v).trim().toLowerCase();
+
+  let headerIdx = -1;
+  let skuCol = -1;
+  let qtyCol = -1;
+  let dateCol = -1;
+  for (let i = 0; i < Math.min(rows.length, 8); i++) {
+    const row = (rows[i] ?? []).map(norm);
+    const s = row.findIndex((c) => SKU_HEADERS.includes(c));
+    let qy = -1;
+    for (const alias of QTY_HEADERS) {
+      const j = row.indexOf(alias);
+      if (j >= 0) { qy = j; break; }
+    }
+    if (s >= 0 && qy >= 0) {
+      headerIdx = i;
+      skuCol = s;
+      qtyCol = qy;
+      dateCol = row.findIndex((c) => DATE_HEADERS.includes(c));
+      break;
+    }
+  }
+  if (headerIdx < 0) return [];
+
   const out: { sku: string; qty: number; date: string | null }[] = [];
-  for (const r of rows) {
-    const keyMap = buildKeyMap(r);
-    const sku = String(cell(r, keyMap, ...SKU_HEADERS) || "").trim();
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const r = rows[i];
+    if (!Array.isArray(r)) continue;
+    const sku = String(r[skuCol] ?? "").trim();
     if (!sku) continue;
-    const qty = Number(cell(r, keyMap, ...QTY_HEADERS));
+    const qty = Number(r[qtyCol]);
     if (!Number.isFinite(qty)) continue;
-    const rawDate = cell(r, keyMap, ...DATE_HEADERS);
     let date: string | null = null;
-    if (rawDate instanceof Date) {
-      date = rawDate.toISOString().slice(0, 10);
-    } else if (typeof rawDate === "string" && rawDate.trim()) {
-      const parsed = new Date(rawDate.trim());
-      if (!Number.isNaN(parsed.getTime())) date = parsed.toISOString().slice(0, 10);
+    if (dateCol >= 0) {
+      const rawDate = r[dateCol];
+      if (rawDate instanceof Date) {
+        date = rawDate.toISOString().slice(0, 10);
+      } else if (typeof rawDate === "string" && rawDate.trim()) {
+        const parsed = new Date(rawDate.trim());
+        if (!Number.isNaN(parsed.getTime())) date = parsed.toISOString().slice(0, 10);
+      }
     }
     out.push({ sku, qty, date });
   }
@@ -151,7 +165,10 @@ export async function importStock(formData: FormData): Promise<ImportStockResult
   const qtyByProduct = new Map<string, number>();
   const unknownAgg = new Map<string, number>(); // sku -> qty
   for (const row of parsedRows) {
-    const productId = resolveMap.get(row.sku.toUpperCase());
+    const upper = row.sku.toUpperCase();
+    // Direct match, else retry without a trailing "-UV" warehouse suffix
+    // (the inventory export writes e.g. BC-CATLITTER-COFFEE-6L-UV for BC-CATLITTER-COFFEE-6L).
+    const productId = resolveMap.get(upper) ?? resolveMap.get(upper.replace(/-UV$/, ""));
     if (!productId) {
       unknownAgg.set(row.sku, (unknownAgg.get(row.sku) || 0) + row.qty);
       continue;
