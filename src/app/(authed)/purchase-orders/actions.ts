@@ -352,9 +352,34 @@ export async function markReceived(formData: FormData): Promise<ActionResult> {
 
   const remark = String(formData.get("remark") || "").trim();
   const proof = formData.get("file_proof");
+  const receivedQtyRaw = String(formData.get("received_qty") || "").trim();
+  const damagedQtyRaw = String(formData.get("damaged_qty") || "").trim();
+  const containerArrivedAt = String(formData.get("container_arrived_at") || "").trim() || null;
+  const unloadCompletedAtRaw = String(formData.get("unload_completed_at") || "").trim();
 
-  // Optional proof photo → receipt-photos bucket (no matching doc_type enum value,
-  // so stored in the bucket only; not registered in po_documents).
+  const receivedQty = receivedQtyRaw ? Number(receivedQtyRaw) : null;
+  const damagedQty = damagedQtyRaw ? Number(damagedQtyRaw) : null;
+  if (receivedQty != null && (Number.isNaN(receivedQty) || receivedQty < 0))
+    return { ok: false, error: "Received qty must be a non-negative number" };
+  if (damagedQty != null && (Number.isNaN(damagedQty) || damagedQty < 0))
+    return { ok: false, error: "Damaged qty must be a non-negative number" };
+
+  // WHS-04: unload_completed_at defaults to now() if not supplied by the actor.
+  const unloadCompletedAt = unloadCompletedAtRaw
+    ? new Date(unloadCompletedAtRaw).toISOString()
+    : new Date().toISOString();
+
+  const update: Record<string, unknown> = {
+    status: "RECEIVED",
+    received_qty: receivedQty,
+    damaged_qty: damagedQty,
+    receipt_remark: remark || null,
+    container_arrived_at: containerArrivedAt,
+    unload_completed_at: unloadCompletedAt,
+  };
+
+  // Optional proof photo → receipt-photos bucket, path recorded on the PO
+  // (receipt_proof_path — WHS-02). Private bucket; reuse getDocUrl-style signed URLs.
   if (isFile(proof)) {
     const path = `${poId}/receipt/${Date.now()}_${slug(proof.name)}`;
     const buffer = Buffer.from(await proof.arrayBuffer());
@@ -365,18 +390,7 @@ export async function markReceived(formData: FormData): Promise<ActionResult> {
         upsert: true,
       });
     if (upErr) return { ok: false, error: `Proof photo upload failed: ${upErr.message}` };
-  }
-
-  // Append the receipt remark to notes (no dedicated column at this increment).
-  const update: Record<string, unknown> = { status: "RECEIVED" };
-  if (remark) {
-    const { data: cur } = await supabase
-      .from("purchase_orders")
-      .select("notes")
-      .eq("id", poId)
-      .maybeSingle();
-    const prev = cur?.notes ? `${cur.notes}\n` : "";
-    update.notes = `${prev}[Received] ${remark}`;
+    update.receipt_proof_path = `receipt-photos/${path}`;
   }
 
   const { error } = await supabase.from("purchase_orders").update(update).eq("id", poId);
@@ -384,5 +398,6 @@ export async function markReceived(formData: FormData): Promise<ActionResult> {
 
   revalidatePath("/purchase-orders");
   revalidatePath(`/purchase-orders/${poId}`);
+  revalidatePath("/warehouse");
   return { ok: true };
 }
