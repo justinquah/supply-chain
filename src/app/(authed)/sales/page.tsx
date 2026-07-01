@@ -1,6 +1,7 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getCurrentUser } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MonthSelector } from "@/components/month-selector";
+import { SalesUploadForm } from "./sales-upload-form";
 
 const MONTHS = [
   "", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -18,6 +19,8 @@ export default async function SalesPage({
 }) {
   const supabase = await createClient();
   const sp = await searchParams;
+  const profile = await getCurrentUser();
+  const canUpload = !!profile && (["SCM", "ADMIN"] as string[]).includes(profile.role);
 
   // Pull all monthly_sales rows (RLS allows all authenticated to read)
   const { data: sales } = await supabase
@@ -84,6 +87,8 @@ export default async function SalesPage({
           Units sold by month and channel (main-product equivalent units)
         </p>
       </div>
+
+      {canUpload && <SalesUploadForm />}
 
       {/* Monthly totals */}
       <Card>
