@@ -222,10 +222,47 @@ export function StageForms({
           />
         </ul>
         <StageForm poId={poId} action={markReceived} submitLabel="Mark received">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Field label="Container arrived">
+              <input name="container_arrived_at" type="date" className={inputCls} />
+            </Field>
+            <Field label="Unload completed">
+              <input
+                name="unload_completed_at"
+                type="datetime-local"
+                className={inputCls}
+              />
+              <span className="text-[11px] text-gray-400 mt-1 block">
+                Leave blank to use now.
+              </span>
+            </Field>
+            <Field label="Received qty">
+              <input
+                name="received_qty"
+                type="number"
+                min="0"
+                className={inputCls}
+                placeholder="units"
+              />
+            </Field>
+            <Field label="Damaged / short qty">
+              <input
+                name="damaged_qty"
+                type="number"
+                min="0"
+                className={inputCls}
+                placeholder="units"
+              />
+            </Field>
+          </div>
           <Field label="Remark">
             <input name="remark" className={inputCls} placeholder="optional note" />
           </Field>
           <FileField label="Proof photo" name="file_proof" />
+          <p className="text-xs text-gray-400">
+            Received/damaged qty and remark are informational — they do not change
+            stock levels or KPI snapshots.
+          </p>
           {blocked && (
             <p className="text-xs text-amber-700">
               The receive action will be rejected until all checks above are green.
