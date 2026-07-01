@@ -2,6 +2,8 @@ import { createClient, getCurrentUser } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MonthSelector } from "@/components/month-selector";
 import { SalesUploadForm } from "./sales-upload-form";
+import { ManualSalesForm } from "./manual-sales-form";
+import { getManualSalesProducts } from "./actions";
 
 const MONTHS = [
   "", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -79,6 +81,17 @@ export default async function SalesPage({
     .map((p) => ({ ...p, total: p.online + p.offline }))
     .sort((a, b) => b.total - a.total);
 
+  // Data for the manual-entry grid: all active products (for the picker) plus
+  // any existing units for the selected month, so entry is pre-filled and
+  // editable rather than starting blank every time.
+  const manualYear = selYear ?? new Date().getFullYear();
+  const manualMonth = selMonth ?? new Date().getMonth() + 1;
+  let manualProducts: Awaited<ReturnType<typeof getManualSalesProducts>>["products"] = [];
+  if (canUpload) {
+    const res = await getManualSalesProducts(manualYear, manualMonth);
+    manualProducts = res.products ?? [];
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -89,6 +102,14 @@ export default async function SalesPage({
       </div>
 
       {canUpload && <SalesUploadForm />}
+
+      {canUpload && (
+        <ManualSalesForm
+          products={manualProducts ?? []}
+          initialYear={manualYear}
+          initialMonth={manualMonth}
+        />
+      )}
 
       {/* Monthly totals */}
       <Card>

@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import * as XLSX from "xlsx";
 import { createClient, getCurrentUser } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 type UnknownSku = { sku: string; qty: number };
 
@@ -242,4 +243,163 @@ export async function importSales(formData: FormData): Promise<ImportSalesResult
     month,
     channel: channel as "ONLINE" | "OFFLINE",
   };
+}
+
+export type ManualSalesRow = {
+  product_id: string;
+  online: number | null;
+  offline: number | null;
+};
+
+export type ManualSalesProduct = {
+  id: string;
+  sku: string;
+  name: string;
+  product_family: string | null;
+  variation: string | null;
+  online: number;
+  offline: number;
+};
+
+/**
+ * Fetch active products + existing monthly_sales units for a given period, so
+ * the manual-entry grid can re-load pre-filled values when the user switches
+ * year/month client-side (the page's initial load only covers the period
+ * selected via the URL's ?y=&m=).
+ */
+export async function getManualSalesProducts(
+  year: number,
+  month: number
+): Promise<{ ok: boolean; error?: string; products?: ManualSalesProduct[] }> {
+  const profile = await getCurrentUser();
+  if (!profile) return { ok: false, error: "Not signed in" };
+  if (!(["SCM", "ADMIN"] as string[]).includes(profile.role)) {
+    return { ok: false, error: "You don't have permission to enter sales" };
+  }
+  if (!Number.isFinite(year) || year < 2000) return { ok: false, error: "Invalid year" };
+  if (!Number.isFinite(month) || month < 1 || month > 12) return { ok: false, error: "Invalid month" };
+
+  const supabase = await createClient();
+  const [{ data: allProducts, error: prodErr }, { data: monthRows, error: salesErr }] = await Promise.all([
+    supabase
+      .from("products")
+      .select("id, sku, name, product_family, variation, is_active")
+      .eq("is_active", true)
+      .order("product_family", { ascending: true })
+      .order("variation", { ascending: true }),
+    supabase
+      .from("monthly_sales")
+      .select("main_product_id, channel, units_equivalent")
+      .eq("year", year)
+      .eq("month", month),
+  ]);
+  if (prodErr) return { ok: false, error: `Could not load products: ${prodErr.message}` };
+  if (salesErr) return { ok: false, error: `Could not load sales: ${salesErr.message}` };
+
+  const unitsByProduct = new Map<string, { online: number; offline: number }>();
+  for (const r of monthRows ?? []) {
+    const e = unitsByProduct.get(r.main_product_id) || { online: 0, offline: 0 };
+    if (r.channel === "ONLINE") e.online += Number(r.units_equivalent);
+    else e.offline += Number(r.units_equivalent);
+    unitsByProduct.set(r.main_product_id, e);
+  }
+
+  const products = (allProducts ?? []).map((p) => {
+    const u = unitsByProduct.get(p.id) || { online: 0, offline: 0 };
+    return {
+      id: p.id,
+      sku: p.sku,
+      name: p.name,
+      product_family: p.product_family,
+      variation: p.variation,
+      online: u.online,
+      offline: u.offline,
+    };
+  });
+
+  return { ok: true, products };
+}
+
+export type SaveManualSalesResult = { ok: boolean; error?: string; saved?: number };
+
+/**
+ * Manual monthly-sales entry (SCM/ADMIN data entry). Per-product upsert per
+ * (main_product_id, year, month, channel): delete any existing row for that
+ * exact key, then insert one if a non-empty value was given. This intentionally
+ * does NOT wipe the whole period/channel (unlike importSales) — a manual edit
+ * to one product must not clobber file-imported rows for every other product
+ * in the same month.
+ *
+ * monthly_sales RLS write policy (sales_write) is SCM-only; ADMIN is allowed
+ * at the app layer per spec, so writes go through the admin (service-role)
+ * client — same pattern as updateLaunchDate in products/actions.ts.
+ */
+export async function saveManualSales(
+  year: number,
+  month: number,
+  rows: ManualSalesRow[]
+): Promise<SaveManualSalesResult> {
+  const profile = await getCurrentUser();
+  if (!profile) return { ok: false, error: "Not signed in" };
+  if (!(["SCM", "ADMIN"] as string[]).includes(profile.role)) {
+    return { ok: false, error: "You don't have permission to enter sales" };
+  }
+
+  if (!Number.isFinite(year) || year < 2000) return { ok: false, error: "Invalid year" };
+  if (!Number.isFinite(month) || month < 1 || month > 12) return { ok: false, error: "Invalid month" };
+
+  const adminClient = createAdminClient();
+
+  const { data: products, error: prodErr } = await adminClient
+    .from("products")
+    .select("id, sku")
+    .in(
+      "id",
+      rows.map((r) => r.product_id)
+    );
+  if (prodErr) return { ok: false, error: `Could not load products: ${prodErr.message}` };
+  const skuById = new Map((products ?? []).map((p) => [p.id, p.sku]));
+
+  let saved = 0;
+  for (const row of rows) {
+    const sku = skuById.get(row.product_id);
+    if (!sku) continue;
+
+    for (const [channel, value] of [
+      ["ONLINE", row.online],
+      ["OFFLINE", row.offline],
+    ] as const) {
+      // Blank means "leave alone" — do nothing for this (product, channel).
+      if (value === null || value === undefined) continue;
+
+      const { error: delErr } = await adminClient
+        .from("monthly_sales")
+        .delete()
+        .eq("year", year)
+        .eq("month", month)
+        .eq("channel", channel)
+        .eq("main_product_id", row.product_id);
+      if (delErr) return { ok: false, error: `Could not clear existing row: ${delErr.message}` };
+
+      if (!Number.isFinite(value) || value <= 0) continue; // 0/blank -> cleared only, no insert
+
+      const { error: insErr } = await adminClient.from("monthly_sales").insert({
+        year,
+        month,
+        channel,
+        platform: "MANUAL",
+        variant_sku: sku,
+        main_product_id: row.product_id,
+        qty_sold_variant: Math.round(value),
+        units_equivalent: value,
+      });
+      if (insErr) return { ok: false, error: `Could not save sales row: ${insErr.message}` };
+      saved++;
+    }
+  }
+
+  revalidatePath("/sales");
+  revalidatePath("/dashboard");
+
+  return { ok: true, saved };
 }
