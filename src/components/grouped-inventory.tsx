@@ -125,18 +125,22 @@ export function GroupedInventory({
     <div className="overflow-x-auto bg-white rounded-lg border border-gray-200">
       <table className="w-full text-sm">
         <thead>
+          <tr className="text-gray-500 border-b border-gray-100 bg-gray-50 text-[11px] uppercase tracking-wide">
+            <th className="pt-2.5 pb-1 pl-4 pr-3 font-semibold text-left" rowSpan={2}>Product range</th>
+            <th className="pt-2.5 pb-1 px-3 font-semibold text-right" rowSpan={2}>Stock</th>
+            <th className="pt-2.5 pb-1 px-3 font-semibold text-center border-l border-gray-200" colSpan={3}>Avg monthly sales (3-mo)</th>
+            <th className="pt-2.5 pb-1 px-3 font-semibold text-right border-l border-gray-200" rowSpan={2}>Sold<br/>last mo</th>
+            <th className="pt-2.5 pb-1 px-3 font-semibold text-center border-l border-gray-200" colSpan={3}>Incoming (units arriving)</th>
+            <th className="pt-2.5 pb-1 px-3 font-semibold text-right border-l border-gray-200" rowSpan={2}>Inv.<br/>value</th>
+            <th className="pt-2.5 pb-1 pr-4 pl-3 font-semibold text-right" rowSpan={2}>Coverage</th>
+          </tr>
           <tr className="text-left text-gray-500 border-b border-gray-200 bg-gray-50">
-            <th className="py-2.5 pl-4 pr-3 font-medium">Product range</th>
-            <th className="py-2.5 px-3 font-medium text-right">Stock</th>
-            <th className="py-2.5 px-3 font-medium text-right">AMS</th>
-            <th className="py-2.5 px-3 font-medium text-right">Online</th>
-            <th className="py-2.5 px-3 font-medium text-right">Offline</th>
-            <th className="py-2.5 px-3 font-medium text-right">Last mo</th>
-            <th className="py-2.5 px-3 font-medium text-right">This mo</th>
-            <th className="py-2.5 px-3 font-medium text-right">Next mo</th>
-            <th className="py-2.5 px-3 font-medium text-right">Following</th>
-            <th className="py-2.5 px-3 font-medium text-right">Inv. value</th>
-            <th className="py-2.5 pr-4 pl-3 font-medium text-right">Coverage</th>
+            <th className="pb-2 px-3 font-medium text-right border-l border-gray-200">AMS</th>
+            <th className="pb-2 px-3 font-medium text-right">Online</th>
+            <th className="pb-2 px-3 font-medium text-right">Offline</th>
+            <th className="pb-2 px-3 font-medium text-right border-l border-gray-200">This mo</th>
+            <th className="pb-2 px-3 font-medium text-right">Next mo</th>
+            <th className="pb-2 px-3 font-medium text-right">Following</th>
           </tr>
         </thead>
         <tbody>

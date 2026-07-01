@@ -60,7 +60,8 @@ The SCM signs in and sees trustworthy Overstock % and OOS % KPI tiles for the cu
 - Data cadence: stock weekly (Monday upload), online + offline sales monthly (existing importers), POs per transaction.
 - KPI definition is LOCKED (see REQUIREMENTS-draft.md): `OUT_OF_STOCK = stock==0`, `OVERSTOCK = stock > 2×AMS_3mo`, `HEALTHY = 0 < stock ≤ 2×AMS_3mo`; `AMS_3mo` = avg monthly sales (online+offline) over past 3 calendar months. Eligibility: `created_at ≤ snapshot_date − 6 months AND is_active`.
 - All "most recent Monday" / snapshot dates computed in Asia/Kuala_Lumpur.
-- Aggressive 9-day path (M0 Mon 23 Jun → Go-live Wed 1 Jul). First KPI-bearing upload is Mon 7 Jul; dry run Mon 30 Jun mitigates first-week parser risk.
+- Aggressive 9-day path (M0 Mon 23 Jun → Go-live Wed 1 Jul).
+- **KPI monitoring go-live plan (confirmed 2026-07-01, now Q4 FY25/26):** KPI monitoring starts from **July 2026** data. Stock: SCM uploads **29 Jun 2026** first, then **6 Jul 2026**, weekly Mondays thereafter (Stock upload has a snapshot-date picker to back-date). Sales: **backfill prior months as far as possible** (AMS_3mo needs Apr/May/Jun 2026 for the July KPI). PO/invoices/docs: load **only currently-pending + upcoming orders** (no historical POs). See memory `kpi-monitoring-plan`. NOTE: the Overstock %/OOS %/Healthy % KPI *engine* is still unbuilt (Batch 2) — the live dashboard currently shows value/turnover/coverage only.
 
 ## Constraints
 
