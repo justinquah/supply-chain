@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DocBadges } from "../doc-badge";
 import { Stepper } from "./stepper";
 import { StageForms } from "./stage-forms";
+import { ReceiptProofLink } from "./receipt-proof-link";
 import {
   PO_WORKFLOW_COLORS,
   PO_WORKFLOW_LABELS,
@@ -29,6 +30,36 @@ function date(d: string | null | undefined) {
   });
 }
 
+function dateTime(d: string | null | undefined) {
+  if (!d) return "—";
+  return new Date(d).toLocaleString("en-MY", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Asia/Kuala_Lumpur",
+  });
+}
+
+// Unload duration = unload_completed_at - container_arrived_at (00:00 KL on the arrival date).
+function unloadDuration(
+  arrivedAt: string | null | undefined,
+  unloadCompletedAt: string | null | undefined
+): string | null {
+  if (!arrivedAt || !unloadCompletedAt) return null;
+  const arrivedMs = new Date(`${arrivedAt}T00:00:00+08:00`).getTime();
+  const completedMs = new Date(unloadCompletedAt).getTime();
+  const diffMs = completedMs - arrivedMs;
+  if (Number.isNaN(diffMs)) return null;
+  const hours = diffMs / (1000 * 60 * 60);
+  if (hours < 0) return "—";
+  const days = Math.floor(hours / 24);
+  const remHours = Math.round(hours % 24);
+  if (days > 0) return `${days}d ${remHours}h`;
+  return `${remHours}h`;
+}
+
 export default async function PurchaseOrderDetailPage({
   params,
 }: {
@@ -46,6 +77,7 @@ export default async function PurchaseOrderDetailPage({
         "id, po_number, status, currency, invoice_currency, product_group, " +
           "expected_invoice_amount, deposit_percent, payment_terms, deposit_due_date, balance_due_date, " +
           "invoice_amount, invoice_number, invoice_date, targeted_eta, actual_eta, notes, created_at, " +
+          "container_arrived_at, unload_completed_at, received_qty, damaged_qty, receipt_remark, receipt_proof_path, " +
           "supplier:profiles!supplier_id(name, company_name), " +
           "po_documents(id, doc_type, file_path, file_name, uploaded_at)"
       )
@@ -179,6 +211,47 @@ export default async function PurchaseOrderDetailPage({
           <DocBadges docs={docs} />
         </CardContent>
       </Card>
+
+      {/* Goods receipt (WHS-01/02/04) — shown once any receipt data exists */}
+      {(poRow.status === "RECEIVED" ||
+        poRow.container_arrived_at ||
+        poRow.unload_completed_at) && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Goods receipt</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
+            <Detail label="Container arrived" value={date(poRow.container_arrived_at)} />
+            <Detail label="Unload completed" value={dateTime(poRow.unload_completed_at)} />
+            <Detail
+              label="Unload duration"
+              value={
+                unloadDuration(poRow.container_arrived_at, poRow.unload_completed_at) ?? "—"
+              }
+            />
+            <Detail
+              label="Received / damaged qty"
+              value={
+                poRow.received_qty == null && poRow.damaged_qty == null
+                  ? "—"
+                  : `${poRow.received_qty ?? "—"} / ${poRow.damaged_qty ?? "0"}`
+              }
+            />
+            {poRow.receipt_remark && (
+              <div className="sm:col-span-2">
+                <span className="text-xs text-gray-500 block mb-1">Receipt remark</span>
+                <p className="text-gray-700 whitespace-pre-line">{poRow.receipt_remark}</p>
+              </div>
+            )}
+            {poRow.receipt_proof_path && (
+              <div>
+                <span className="text-xs text-gray-500 block mb-1">Proof photo</span>
+                <ReceiptProofLink filePath={poRow.receipt_proof_path} />
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Stage action OR read-only waiting note */}
       <Card>
