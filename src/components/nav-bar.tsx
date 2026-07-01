@@ -11,6 +11,11 @@ const ALL_NAV = [
   { href: "/sales", label: "Sales", roles: null },
   { href: "/purchase-orders", label: "PO & Invoices", roles: null },
   { href: "/finance", label: "Finance", roles: ["FINANCE", "ADMIN", "SCM"] },
+  {
+    href: "/warehouse",
+    label: "Warehouse",
+    roles: ["WAREHOUSE", "ADMIN", "SCM", "LOGISTICS"],
+  },
   { href: "/products", label: "Products", roles: null },
   { href: "/stock", label: "Stock Levels", roles: null },
   { href: "/settings", label: "Settings", roles: null },
