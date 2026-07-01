@@ -6,15 +6,15 @@ current_phase: 1
 current_phase_name: Foundation & Roles
 status: executing
 stopped_at: Phase 1 — 01-01 done; 01-02/01-03 staged, awaiting human DB push + Vercel env
-last_updated: "2026-06-22T12:13:47.136Z"
-last_activity: 2026-06-22
-last_activity_desc: Phase 1 Waves 1-3 authored; build green; live DB push + deploy env deferred to human
+last_updated: "2026-07-01T09:49:03.278Z"
+last_activity: 2026-06-23
+last_activity_desc: Migrations 0011/0012 applied to prod via Management API; 3 Vercel env vars set; pushed main → prod deploy READY; /login verified 200
 progress:
   total_phases: 4
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 3
-  completed_plans: 3
-  percent: 100
+  completed_plans: 5
+  percent: 25
 ---
 
 # Project State
@@ -90,8 +90,14 @@ Recent decisions affecting current work:
 |----------|------|--------|-------------|
 | Notifications | Email/SMS/WhatsApp delivery (NTF-02) | Deferred to v2 | Init |
 
+## Quick Tasks Completed
+
+| Date | Slug | Summary |
+|------|------|---------|
+| 2026-07-01 | sales-trend-tab | Added /sales/trend: product x month x channel pivot table (range→variation grouping, Total/Online/Offline toggle). Commit ab17f04. |
+
 ## Session Continuity
 
-Last session: 2026-06-22
+Last session: 2026-07-01T09:49:03.274Z
 Stopped at: Phase 1 — 01-01 complete; 01-02 migrations + 01-03 app code authored and committed; paused for human DB push + Vercel env
 Resume file: .planning/phases/01-foundation-roles/01-03-SUMMARY.md (see its ⏸ PENDING HUMAN ACTION section)
