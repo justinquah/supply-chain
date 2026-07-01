@@ -63,6 +63,7 @@ Requirements for the 1 July 2026 go-live. Each maps to a roadmap phase.
 - [ ] **FIN-02**: Finance can record a payment (amount + slip upload) and may repeat for partial payments
 - [ ] **FIN-03**: The system shows a running balance and `balance_due_by`; balance == 0 marks the PO settled
 - [ ] **FIN-04**: Payment slips are stored in the `payment-slips` bucket; SCM can download them
+- [ ] **FIN-05**: Finance can pay a supplier via **Bank balance** or **Banker's Acceptance**; BA payments capture a term (≤120 days from the goods' arrival date) + a BA due date, and Finance can see upcoming BA settlements (amount + when due) *(added 2026-06-23)*
 
 ### Notifications
 
@@ -123,12 +124,13 @@ Deferred — acknowledged but not in the go-live roadmap.
 | FIN-02 | Phase 4 | Pending |
 | FIN-03 | Phase 4 | Pending |
 | FIN-04 | Phase 4 | Pending |
+| FIN-05 | Phase 4 | In Progress (4B) |
 | NTF-01 | Phase 4 | Pending |
 
 **Coverage:**
 
-- v1 requirements: 34 total (added WHS-01..04 — Warehouse goods receipt + container tracking, 2026-06-22)
-- Mapped to phases: 34 ✓
+- v1 requirements: 35 total (added WHS-01..04 2026-06-22; FIN-05 payment method/BA 2026-06-23)
+- Mapped to phases: 35 ✓
 - Unmapped: 0 ✓
 
 ---

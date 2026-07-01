@@ -97,15 +97,16 @@ Plans:
   4. PO/invoice/shipping/payment/receipt-proof documents land in their correct Supabase Storage buckets
   5. The relevant role is notified in-app (bell) at each hand-off, incl. WAREHOUSE on incoming ETA
   6. At arrival, WAREHOUSE records qty received + damaged/short (remark-only, no stock change) with proof upload for short/damaged; container arrived-at + unload-completed timestamps are captured and unload duration derived (one PO = one container)
+  7. Finance can pay via **Bank balance** or **Banker's Acceptance**; a BA captures a term (≤120 days from the goods' arrival date) + a computed BA due date, and upcoming BA settlements are visible with their amounts + due dates (added 2026-06-23)
 
-**Plans**: 4 plans
+**Plans** (built as increments; foundation migrations 0013/0014/0015 applied to prod):
 
 Plans:
 
-- [ ] 04-01: PO state machine + per-stage UIs (draft, approve, invoice, logistics-clearance/ship, receive) + document storage (clearance stage — BL/K1/ETA — owned by LOGISTICS)
-- [ ] 04-02: Finance inbox + partial payments + running balance / balance_due_by
-- [ ] 04-03: In-app notification bell for hand-offs (incl. WAREHOUSE ETA)
-- [ ] 04-04: Warehouse goods receipt (qty/damage remark + proof, WAREHOUSE marks RECEIVED) + container arrival/unload tracking (WHS-01..04)
+- [x] 04A: PO state machine + per-stage role-gated UIs (SCM draft → ACCOUNTS approve → SCM invoice → LOGISTICS ship → WAREHOUSE receive), stepper, document storage, RECEIVED gate (BL+K1+balance==0) — ✓ shipped to prod 2026-06-23
+- [ ] 04B: Finance — inbox (balance > 0), record payment (**Bank balance / Banker's Acceptance**, BA term + due date), running balance (v_po_balance), amount-paid / to-be-paid / **BA-due calendar** + upcoming-BA list — 🔨 building (unblocks the RECEIVED gate once balances clear)
+- [ ] 04C: Logistics clearance detail + Warehouse goods-receipt qty/damage/proof + container arrival/unload tracking + **Warehouse arrival calendar** (WHS-01..04)
+- [ ] 04D: In-app notification bell for hand-offs (incl. WAREHOUSE incoming-ETA) (NTF-01)
 
 ## Progress
 
