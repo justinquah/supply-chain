@@ -1,5 +1,6 @@
 import { createClient, requireRole } from "@/lib/supabase/server";
 import { StockFormGrouped } from "./stock-form-grouped";
+import { StockUploadForm } from "./stock-upload-form";
 
 const MONTHS = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -66,6 +67,7 @@ export default async function StockPage() {
           )}
         </p>
       </div>
+      {canEdit && <StockUploadForm />}
       <StockFormGrouped rows={rows} canEdit={canEdit} />
     </div>
   );
