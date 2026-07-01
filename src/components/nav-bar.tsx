@@ -5,14 +5,15 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 
-const NAV = [
-  { href: "/dashboard", label: "Dashboard" },
-  { href: "/kpi", label: "KPIs" },
-  { href: "/sales", label: "Sales" },
-  { href: "/purchase-orders", label: "PO & Invoices" },
-  { href: "/products", label: "Products" },
-  { href: "/stock", label: "Stock Levels" },
-  { href: "/settings", label: "Settings" },
+const ALL_NAV = [
+  { href: "/dashboard", label: "Dashboard", roles: null },
+  { href: "/kpi", label: "KPIs", roles: null },
+  { href: "/sales", label: "Sales", roles: null },
+  { href: "/purchase-orders", label: "PO & Invoices", roles: null },
+  { href: "/finance", label: "Finance", roles: ["FINANCE", "ADMIN", "SCM"] },
+  { href: "/products", label: "Products", roles: null },
+  { href: "/stock", label: "Stock Levels", roles: null },
+  { href: "/settings", label: "Settings", roles: null },
 ];
 
 export function NavBar({
@@ -46,7 +47,9 @@ export function NavBar({
               </span>
             </Link>
             <nav className="flex items-center gap-1">
-              {NAV.map((item) => {
+              {ALL_NAV.filter(
+                (item) => item.roles === null || item.roles.includes(role)
+              ).map((item) => {
                 const active =
                   pathname === item.href ||
                   (item.href !== "/dashboard" &&
