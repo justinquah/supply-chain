@@ -9,6 +9,11 @@ const ALL_NAV = [
   { href: "/dashboard", label: "Dashboard", roles: null },
   { href: "/kpi", label: "KPIs", roles: null },
   { href: "/sales", label: "Sales", roles: null },
+  {
+    href: "/sales/trend",
+    label: "Sales Trend",
+    roles: ["SCM", "ACCOUNTS", "FINANCE", "ADMIN"],
+  },
   { href: "/purchase-orders", label: "PO & Invoices", roles: null },
   { href: "/finance", label: "Finance", roles: ["FINANCE", "ADMIN", "SCM"] },
   {
@@ -33,6 +38,20 @@ export function NavBar({
 }) {
   const pathname = usePathname();
 
+  const visibleNav = ALL_NAV.filter(
+    (item) => item.roles === null || item.roles.includes(role)
+  );
+
+  // Pick the most specific (longest href) match so e.g. "/sales/trend" doesn't
+  // also light up the "/sales" link.
+  const activeHref = visibleNav
+    .filter(
+      (item) =>
+        pathname === item.href ||
+        (item.href !== "/dashboard" && pathname.startsWith(item.href + "/"))
+    )
+    .sort((a, b) => b.href.length - a.href.length)[0]?.href;
+
   return (
     <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -53,13 +72,8 @@ export function NavBar({
               </span>
             </Link>
             <nav className="flex items-center gap-1">
-              {ALL_NAV.filter(
-                (item) => item.roles === null || item.roles.includes(role)
-              ).map((item) => {
-                const active =
-                  pathname === item.href ||
-                  (item.href !== "/dashboard" &&
-                    pathname.startsWith(item.href));
+              {visibleNav.map((item) => {
+                const active = item.href === activeHref;
                 return (
                   <Link
                     key={item.href}
