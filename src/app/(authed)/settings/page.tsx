@@ -3,8 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { UsersTable } from "./users-table";
 
 export default async function SettingsPage() {
-  // Gate: only ADMIN can access settings/user-management.
-  await requireRole("ADMIN");
+  // Gate: ADMIN and SCM (SCM = ADMIN) can access settings/user-management.
+  await requireRole("ADMIN", "SCM");
 
   const supabase = await createClient();
   const { data: users } = await supabase

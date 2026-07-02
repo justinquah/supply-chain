@@ -17,11 +17,11 @@ export async function inviteUser(
   role: AppRoleEnum,
   name: string
 ): Promise<{ ok: boolean; error?: string }> {
-  await requireRole("ADMIN");
+  await requireRole("ADMIN", "SCM");
 
   const roleResult = appRoleSchema.safeParse(role);
   if (!roleResult.success) {
-    return { ok: false, error: "Invalid role. Must be one of: SCM, ACCOUNTS, FINANCE, ADMIN." };
+    return { ok: false, error: "Invalid role." };
   }
 
   const adminClient = createAdminClient();
@@ -43,11 +43,11 @@ export async function updateUserRole(
   userId: string,
   role: AppRoleEnum
 ): Promise<{ ok: boolean; error?: string }> {
-  await requireRole("ADMIN");
+  await requireRole("ADMIN", "SCM");
 
   const roleResult = appRoleSchema.safeParse(role);
   if (!roleResult.success) {
-    return { ok: false, error: "Invalid role. Must be one of: SCM, ACCOUNTS, FINANCE, ADMIN." };
+    return { ok: false, error: "Invalid role." };
   }
 
   const adminClient = createAdminClient();
