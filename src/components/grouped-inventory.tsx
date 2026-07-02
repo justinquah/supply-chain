@@ -64,12 +64,15 @@ export function GroupedInventory({
   products,
   incomingMap,
   lastMonthSalesMap,
+  hideValue = false,
 }: {
   products: ProductRow[];
   /** product_id → IncomingBuckets (may be absent if no incoming) */
   incomingMap?: Record<string, IncomingBuckets>;
   /** product_id → total units sold in prev completed calendar month */
   lastMonthSalesMap?: Record<string, number>;
+  /** Hide the monetary "Inv. value" column entirely (STAFF restricted view). */
+  hideValue?: boolean;
 }) {
   // All multi-product families start expanded
   const [open, setOpen] = useState<Record<string, boolean>>({});
@@ -131,7 +134,9 @@ export function GroupedInventory({
             <th className="pt-2.5 pb-1 px-3 font-semibold text-center border-l border-gray-200" colSpan={3}>Avg monthly sales (3-mo)</th>
             <th className="pt-2.5 pb-1 px-3 font-semibold text-right border-l border-gray-200" rowSpan={2}>Sold<br/>last mo</th>
             <th className="pt-2.5 pb-1 px-3 font-semibold text-center border-l border-gray-200" colSpan={3}>Incoming (units arriving)</th>
-            <th className="pt-2.5 pb-1 px-3 font-semibold text-right border-l border-gray-200" rowSpan={2}>Inv.<br/>value</th>
+            {!hideValue && (
+              <th className="pt-2.5 pb-1 px-3 font-semibold text-right border-l border-gray-200" rowSpan={2}>Inv.<br/>value</th>
+            )}
             <th className="pt-2.5 pb-1 pr-4 pl-3 font-semibold text-right" rowSpan={2}>Coverage</th>
           </tr>
           <tr className="text-left text-gray-500 border-b border-gray-200 bg-gray-50">
@@ -198,9 +203,11 @@ export function GroupedInventory({
                   <td className="py-2.5 px-3 text-right tabular-nums text-gray-500">
                     {n(g.incomingFollowing)}
                   </td>
-                  <td className="py-2.5 px-3 text-right tabular-nums text-gray-600">
-                    {rm(g.value)}
-                  </td>
+                  {!hideValue && (
+                    <td className="py-2.5 px-3 text-right tabular-nums text-gray-600">
+                      {rm(g.value)}
+                    </td>
+                  )}
                   <td className="py-2.5 pr-4 pl-3 text-right tabular-nums">
                     <span className={coverageClass(g.coverage)}>
                       {g.coverage == null ? "—" : n(g.coverage, 1) + " mo"}
@@ -248,9 +255,11 @@ export function GroupedInventory({
                           <td className="py-1.5 px-3 text-right tabular-nums">
                             {n(pb.following)}
                           </td>
-                          <td className="py-1.5 px-3 text-right tabular-nums">
-                            {rm(p.inventory_value_myr)}
-                          </td>
+                          {!hideValue && (
+                            <td className="py-1.5 px-3 text-right tabular-nums">
+                              {rm(p.inventory_value_myr)}
+                            </td>
+                          )}
                           <td className="py-1.5 pr-4 pl-3 text-right tabular-nums">
                             <span className={coverageClass(p.coverage_months)}>
                               {p.coverage_months == null
