@@ -5,28 +5,38 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 
-const ALL_NAV = [
-  { href: "/dashboard", label: "Dashboard", roles: null },
-  { href: "/kpi", label: "KPIs", roles: null },
-  { href: "/sales", label: "Sales", roles: null },
+// Internal roles = everyone except STAFF and SUPPLIER.
+const INTERNAL = ["SCM", "ADMIN", "ACCOUNTS", "FINANCE", "WAREHOUSE", "LOGISTICS"];
+
+// Every nav item declares an explicit allow-list (no more `roles: null`).
+// STAFF sees only Dashboard; SUPPLIER sees only "My Orders".
+const ALL_NAV: { href: string; label: string; roles: string[] }[] = [
+  { href: "/dashboard", label: "Dashboard", roles: [...INTERNAL, "STAFF"] },
+  { href: "/kpi", label: "KPIs", roles: INTERNAL },
+  { href: "/sales", label: "Sales", roles: INTERNAL },
   {
     href: "/sales/trend",
     label: "Sales Trend",
     roles: ["SCM", "ACCOUNTS", "FINANCE", "ADMIN"],
   },
-  { href: "/purchase-orders", label: "PO & Invoices", roles: null },
-  { href: "/finance", label: "Finance", roles: ["FINANCE", "ADMIN", "SCM"] },
+  { href: "/purchase-orders", label: "PO & Invoices", roles: INTERNAL },
+  {
+    href: "/finance",
+    label: "Finance",
+    roles: ["FINANCE", "ACCOUNTS", "ADMIN", "SCM"],
+  },
   {
     href: "/warehouse",
     label: "Warehouse",
     roles: ["WAREHOUSE", "ADMIN", "SCM", "LOGISTICS"],
   },
-  { href: "/products", label: "Products", roles: null },
+  { href: "/products", label: "Products", roles: INTERNAL },
   { href: "/suppliers", label: "Suppliers", roles: ["SCM", "ADMIN"] },
   { href: "/development", label: "Development", roles: ["SCM", "ADMIN"] },
   { href: "/permits", label: "Permits", roles: ["SCM", "ADMIN"] },
-  { href: "/stock", label: "Stock Levels", roles: null },
-  { href: "/settings", label: "Settings", roles: null },
+  { href: "/stock", label: "Stock Levels", roles: INTERNAL },
+  { href: "/supplier", label: "My Orders", roles: ["SUPPLIER", "SCM", "ADMIN"] },
+  { href: "/settings", label: "Settings", roles: ["ADMIN", "SCM"] },
 ];
 
 export function NavBar({
@@ -40,9 +50,7 @@ export function NavBar({
 }) {
   const pathname = usePathname();
 
-  const visibleNav = ALL_NAV.filter(
-    (item) => item.roles === null || item.roles.includes(role)
-  );
+  const visibleNav = ALL_NAV.filter((item) => item.roles.includes(role));
 
   // Pick the most specific (longest href) match so e.g. "/sales/trend" doesn't
   // also light up the "/sales" link.
