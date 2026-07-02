@@ -4,8 +4,16 @@ import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
-/** The six canonical application roles. */
-export type AppRole = "SCM" | "ACCOUNTS" | "FINANCE" | "ADMIN" | "WAREHOUSE" | "LOGISTICS";
+/** The canonical application roles (mirrors the user_role DB enum post-0023 migration). */
+export type AppRole =
+  | "SCM"
+  | "ACCOUNTS"
+  | "FINANCE"
+  | "ADMIN"
+  | "WAREHOUSE"
+  | "LOGISTICS"
+  | "SUPPLIER"
+  | "STAFF";
 
 export async function createClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;

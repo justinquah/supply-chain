@@ -5,6 +5,8 @@ export const ROLES = {
   ADMIN: "ADMIN",
   WAREHOUSE: "WAREHOUSE",
   LOGISTICS: "LOGISTICS",
+  SUPPLIER: "SUPPLIER",
+  STAFF: "STAFF",
 } as const;
 
 export const ROLE_LABELS: Record<string, string> = {
@@ -14,7 +16,19 @@ export const ROLE_LABELS: Record<string, string> = {
   ADMIN: "Admin",
   WAREHOUSE: "Warehouse",
   LOGISTICS: "Logistics",
+  SUPPLIER: "Supplier",
+  STAFF: "Staff",
 };
+
+/** Internal roles = everyone except STAFF and SUPPLIER. */
+export const INTERNAL_ROLES = [
+  "SCM",
+  "ADMIN",
+  "ACCOUNTS",
+  "FINANCE",
+  "WAREHOUSE",
+  "LOGISTICS",
+] as const;
 
 export const PO_STATUSES = {
   DRAFT: "DRAFT",
