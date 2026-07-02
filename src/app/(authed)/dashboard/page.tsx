@@ -1,4 +1,5 @@
-import { createClient } from "@/lib/supabase/server";
+import { redirect } from "next/navigation";
+import { createClient, getCurrentUser } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { GroupedInventory, type ProductRow, type IncomingBuckets } from "@/components/grouped-inventory";
 import { MonthSelector } from "@/components/month-selector";
@@ -26,6 +27,12 @@ export default async function DashboardPage({
 }: {
   searchParams: Promise<{ y?: string; m?: string }>;
 }) {
+  // SUPPLIER users have no inventory dashboard — send them to their portal.
+  const me = await getCurrentUser();
+  if (me?.role === "SUPPLIER") redirect("/supplier");
+  // STAFF gets a restricted, value-free dashboard (no monetary figures).
+  const canSeeValue = me?.role !== "STAFF";
+
   const supabase = await createClient();
   const sp = await searchParams;
 
@@ -152,6 +159,9 @@ export default async function DashboardPage({
 
   const totalStock = products.reduce((s, p) => s + Number(p.current_stock || 0), 0);
   const totalAms = products.reduce((s, p) => s + Number(p.ams_total || 0), 0);
+  // Overall coverage (value-free) = total stock units / total AMS — the "turnover"
+  // figure STAFF can see in place of the value-weighted turnover.
+  const overallCoverage = totalAms > 0 ? totalStock / totalAms : null;
   const atRisk = products.filter(
     (p) => p.ams_total > 0 && p.coverage_months != null && Number(p.coverage_months) < IDEAL
   ).length;
@@ -165,8 +175,8 @@ export default async function DashboardPage({
         <div>
           <h1 className="text-2xl font-semibold">Inventory Dashboard</h1>
           <p className="text-sm text-gray-500 mt-1">
-            By product range · AMS = 3 months ending {MONTHS[selMonth]} {selYear} ·
-            values in MYR
+            By product range · AMS = 3 months ending {MONTHS[selMonth]} {selYear}
+            {canSeeValue && " · values in MYR"}
             {!isLatest && (
               <span className="ml-2 text-amber-600">
                 (viewing historical month)
@@ -184,22 +194,45 @@ export default async function DashboardPage({
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Kpi
-          label="Inventory value"
-          value={rm(inventoryValue)}
-          sub="at cost"
-        />
-        <Kpi
-          label="Weighted turnover"
-          value={weightedTurnover == null ? "—" : num(weightedTurnover, 2) + " mo"}
-          sub={`target ${IDEAL} mo · weighted by sales value`}
-          danger={weightedTurnover != null && weightedTurnover < IDEAL}
-        />
-        <Kpi
-          label="Monthly sales value"
-          value={rm(monthlySalesValue)}
-          sub="at cost / month"
-        />
+        {canSeeValue ? (
+          <>
+            <Kpi
+              label="Inventory value"
+              value={rm(inventoryValue)}
+              sub="at cost"
+            />
+            <Kpi
+              label="Weighted turnover"
+              value={weightedTurnover == null ? "—" : num(weightedTurnover, 2) + " mo"}
+              sub={`target ${IDEAL} mo · weighted by sales value`}
+              danger={weightedTurnover != null && weightedTurnover < IDEAL}
+            />
+            <Kpi
+              label="Monthly sales value"
+              value={rm(monthlySalesValue)}
+              sub="at cost / month"
+            />
+          </>
+        ) : (
+          <>
+            <Kpi
+              label="Total stock"
+              value={num(totalStock)}
+              sub="units on hand"
+            />
+            <Kpi
+              label="Avg monthly sales"
+              value={num(totalAms)}
+              sub="units / month (3-mo)"
+            />
+            <Kpi
+              label="Stock coverage"
+              value={overallCoverage == null ? "—" : num(overallCoverage, 2) + " mo"}
+              sub={`months of stock, target ${IDEAL}`}
+              danger={overallCoverage != null && overallCoverage < IDEAL}
+            />
+          </>
+        )}
         <Kpi
           label="Ranges below 1.5 mo"
           value={num(atRisk)}
@@ -208,7 +241,8 @@ export default async function DashboardPage({
         />
       </div>
 
-      {/* Inventory health by week */}
+      {/* Inventory health by week — value chart, hidden for STAFF */}
+      {canSeeValue && (
       <Card>
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle>Inventory health by week</CardTitle>
@@ -255,6 +289,7 @@ export default async function DashboardPage({
           )}
         </CardContent>
       </Card>
+      )}
 
       {/* Grouped inventory */}
       <Card>
@@ -276,6 +311,7 @@ export default async function DashboardPage({
             products={products}
             incomingMap={incomingMap}
             lastMonthSalesMap={lastMonthSalesMap}
+            hideValue={!canSeeValue}
           />
         </CardContent>
       </Card>
