@@ -23,6 +23,8 @@ const ALL_NAV = [
   },
   { href: "/products", label: "Products", roles: null },
   { href: "/suppliers", label: "Suppliers", roles: ["SCM", "ADMIN"] },
+  { href: "/development", label: "Development", roles: ["SCM", "ADMIN"] },
+  { href: "/permits", label: "Permits", roles: ["SCM", "ADMIN"] },
   { href: "/stock", label: "Stock Levels", roles: null },
   { href: "/settings", label: "Settings", roles: null },
 ];
