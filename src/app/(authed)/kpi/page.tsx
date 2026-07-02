@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, requireRole } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 const MONTHS = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -15,6 +15,8 @@ function num(v: number, dp = 0) {
 }
 
 export default async function KpiPage() {
+  // Internal-only: rejects STAFF and SUPPLIER.
+  await requireRole("SCM", "ADMIN", "ACCOUNTS", "FINANCE", "WAREHOUSE", "LOGISTICS");
   const supabase = await createClient();
 
   const [{ data: monthly }, { data: dash }, { data: weekly }] = await Promise.all([

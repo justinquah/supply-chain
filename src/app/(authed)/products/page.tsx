@@ -1,4 +1,4 @@
-import { createClient, getCurrentUser } from "@/lib/supabase/server";
+import { createClient, getCurrentUser, requireRole } from "@/lib/supabase/server";
 import { Card, CardContent } from "@/components/ui/card";
 import { LaunchDateCell } from "./launch-date-cell";
 import { AddProductForm } from "./add-product-form";
@@ -17,6 +17,8 @@ export default async function ProductsPage({
 }: {
   searchParams: Promise<{ show?: string }>;
 }) {
+  // Internal-only: rejects STAFF and SUPPLIER.
+  await requireRole("SCM", "ADMIN", "ACCOUNTS", "FINANCE", "WAREHOUSE", "LOGISTICS");
   const supabase = await createClient();
   const sp = await searchParams;
   const showInactive = sp.show === "all";

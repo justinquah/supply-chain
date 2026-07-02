@@ -23,7 +23,8 @@ function slug(s: string) {
 export async function recordPayment(formData: FormData): Promise<ActionResult> {
   const profile = await getCurrentUser();
   if (!profile) return { ok: false, error: "Not signed in" };
-  if (profile.role !== "FINANCE")
+  // ACCOUNTS = FINANCE.
+  if (profile.role !== "FINANCE" && profile.role !== "ACCOUNTS")
     return { ok: false, error: "Only Finance can record payments" };
 
   const supabase = await createClient();
@@ -158,7 +159,8 @@ export async function updateBaTerms(
 ): Promise<ActionResult> {
   const profile = await getCurrentUser();
   if (!profile) return { ok: false, error: "Not signed in" };
-  if (profile.role !== "FINANCE")
+  // ACCOUNTS = FINANCE.
+  if (profile.role !== "FINANCE" && profile.role !== "ACCOUNTS")
     return { ok: false, error: "Only Finance can update BA terms" };
 
   if (baTermDays < 0 || baTermDays > 120)

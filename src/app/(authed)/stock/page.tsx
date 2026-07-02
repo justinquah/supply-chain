@@ -11,9 +11,17 @@ function fmtDate(iso: string): string {
 
 export default async function StockPage() {
   const supabase = await createClient();
-  // Gate to SCM and ADMIN only; other roles are redirected to /login.
-  await requireRole("SCM", "ADMIN");
-  const canEdit = true; // requireRole guarantees the role is SCM or ADMIN
+  // Internal-only: rejects STAFF and SUPPLIER. All internal roles may view stock
+  // levels; only SCM/ADMIN may edit (matches stock/actions.ts write gate).
+  const profile = await requireRole(
+    "SCM",
+    "ADMIN",
+    "ACCOUNTS",
+    "FINANCE",
+    "WAREHOUSE",
+    "LOGISTICS"
+  );
+  const canEdit = (["SCM", "ADMIN"] as string[]).includes(profile.role);
 
   // Fetch products with family/variation info
   const { data: dash } = await supabase

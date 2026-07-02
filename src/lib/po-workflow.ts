@@ -51,7 +51,8 @@ type StageDef = {
 };
 
 export const PO_STAGE: Record<string, StageDef> = {
-  DRAFT: { actors: ["ACCOUNTS"], waitingOn: "Accounts", next: "PO_APPROVED" },
+  // ACCOUNTS = FINANCE: either may approve a draft PO.
+  DRAFT: { actors: ["ACCOUNTS", "FINANCE"], waitingOn: "Accounts", next: "PO_APPROVED" },
   PO_APPROVED: { actors: ["SCM"], waitingOn: "SCM", next: "INVOICE_RECEIVED" },
   INVOICE_RECEIVED: { actors: ["LOGISTICS"], waitingOn: "Logistics", next: "SHIPPED" },
   SHIPPED: { actors: ["WAREHOUSE"], waitingOn: "Warehouse", next: "RECEIVED" },

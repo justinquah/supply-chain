@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { createClient, getCurrentUser } from "@/lib/supabase/server";
+import { createClient, getCurrentUser, requireRole } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DocBadges } from "../doc-badge";
 import { Stepper } from "./stepper";
@@ -66,6 +66,8 @@ export default async function PurchaseOrderDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+  // Internal-only: rejects STAFF and SUPPLIER (suppliers use /supplier).
+  await requireRole("SCM", "ADMIN", "ACCOUNTS", "FINANCE", "WAREHOUSE", "LOGISTICS");
   const supabase = await createClient();
   const profile = await getCurrentUser();
   const role = profile?.role ?? "";

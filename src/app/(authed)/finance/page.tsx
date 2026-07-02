@@ -61,8 +61,10 @@ function toKlDate(d: string | Date | null | undefined): string | null {
 // Page — gated to FINANCE + ADMIN (read-only for ADMIN; write is FINANCE-only)
 // ---------------------------------------------------------------------------
 export default async function FinancePage() {
-  const profile = await requireRole("FINANCE", "ADMIN");
-  const isFinance = profile.role === "FINANCE";
+  // ACCOUNTS = FINANCE, SCM = ADMIN.
+  const profile = await requireRole("FINANCE", "ACCOUNTS", "ADMIN", "SCM");
+  const isFinance =
+    profile.role === "FINANCE" || profile.role === "ACCOUNTS";
 
   const supabase = await createClient();
 

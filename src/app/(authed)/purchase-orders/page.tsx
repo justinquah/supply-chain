@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { createClient, getCurrentUser } from "@/lib/supabase/server";
+import { createClient, getCurrentUser, requireRole } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PoForm } from "./po-form";
 import { DocBadges } from "./doc-badge";
@@ -19,6 +19,8 @@ function money(n: number | null, cur: string | null) {
 }
 
 export default async function PurchaseOrdersPage() {
+  // Internal-only: rejects STAFF and SUPPLIER (suppliers use /supplier).
+  await requireRole("SCM", "ADMIN", "ACCOUNTS", "FINANCE", "WAREHOUSE", "LOGISTICS");
   const supabase = await createClient();
   const profile = await getCurrentUser();
   const role = profile?.role ?? "";
