@@ -1,6 +1,6 @@
 import { createClient, requireRole } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { PO_WORKFLOW_LABELS } from "@/lib/po-workflow";
+import { PO_WORKFLOW_LABELS, currentEtaToPort } from "@/lib/po-workflow";
 import {
   ArrivalCalendar,
   type ArrivalEntry,
@@ -37,6 +37,7 @@ export default async function WarehousePage() {
     .from("purchase_orders")
     .select(
       "id, po_number, status, targeted_eta, actual_eta, container_arrived_at, " +
+        "supplier_eta, logistics_eta, eta_to_warehouse, clearance_status, " +
         "unload_completed_at, supplier:profiles!supplier_id(name, company_name)"
     )
     .neq("status", "RECEIVED")
@@ -48,12 +49,44 @@ export default async function WarehousePage() {
   const { year: klYear, month: klMonth, todayIso } = klTodayInfo();
   const todayEpoch = new Date(todayIso).getTime();
 
-  // Plot each non-received PO on COALESCE(actual_eta, targeted_eta).
-  const arrivals: ArrivalEntry[] = pos
-    .filter((po) => po.actual_eta || po.targeted_eta)
+  function fmtDate(d: string | null | undefined): string {
+    if (!d) return "—";
+    return new Date(`${d}T00:00:00Z`).toLocaleDateString("en-MY", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      timeZone: "UTC",
+    });
+  }
+
+  // Per-PO ETA overview: current ETA-to-port vs ETA-to-warehouse.
+  const etaRows = pos
     .map((po) => {
-      const eta = po.actual_eta ?? po.targeted_eta;
-      const etaEpoch = new Date(eta).getTime();
+      const supplier = po.supplier as { name?: string; company_name?: string } | null;
+      return {
+        poId: po.id as string,
+        poNumber: po.po_number as string | null,
+        supplierName: supplier?.company_name || supplier?.name || null,
+        etaToPort: currentEtaToPort(po),
+        etaToWarehouse: (po.eta_to_warehouse ?? null) as string | null,
+      };
+    })
+    .sort((a, b) => {
+      const ka = a.etaToWarehouse || a.etaToPort || "9999";
+      const kb = b.etaToWarehouse || b.etaToPort || "9999";
+      return ka < kb ? -1 : ka > kb ? 1 : 0;
+    });
+
+  // Plot each non-received PO on its ETA to warehouse, falling back to the
+  // current ETA-to-port (logistics → supplier → targeted) when the warehouse
+  // ETA hasn't been set yet.
+  const arrivals: ArrivalEntry[] = pos
+    .map((po) => ({ po, eta: po.eta_to_warehouse ?? currentEtaToPort(po) }))
+    .filter((x) => !!x.eta)
+    .map(({ po, eta }) => {
+      // Both sides are plain calendar dates at UTC midnight (todayEpoch is too)
+      // so the day-difference is off-by-one-safe.
+      const etaEpoch = new Date(`${eta}T00:00:00Z`).getTime();
       const daysUntil = Math.round((etaEpoch - todayEpoch) / 86400000);
       const supplier = po.supplier as { name?: string; company_name?: string } | null;
       return {
@@ -112,6 +145,50 @@ export default async function WarehousePage() {
             initialMonth={klMonth}
             todayKl={todayIso}
           />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>ETA overview</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {etaRows.length === 0 ? (
+            <p className="text-sm text-gray-500 px-6 py-6">
+              No incoming purchase orders.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-gray-500 border-b border-gray-100 bg-gray-50 text-[11px] uppercase tracking-wide text-left">
+                    <th className="py-2 pl-6 pr-3 font-semibold">PO #</th>
+                    <th className="py-2 px-3 font-semibold">Supplier</th>
+                    <th className="py-2 px-3 font-semibold">ETA to port</th>
+                    <th className="py-2 pr-6 pl-3 font-semibold">ETA to warehouse</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {etaRows.map((r) => (
+                    <tr key={r.poId} className="border-b border-gray-100">
+                      <td className="py-2.5 pl-6 pr-3 font-medium text-gray-900">
+                        {r.poNumber || "—"}
+                      </td>
+                      <td className="py-2.5 px-3 text-gray-600">
+                        {r.supplierName || "—"}
+                      </td>
+                      <td className="py-2.5 px-3 text-gray-700 tabular-nums">
+                        {fmtDate(r.etaToPort)}
+                      </td>
+                      <td className="py-2.5 pr-6 pl-3 text-gray-700 tabular-nums">
+                        {fmtDate(r.etaToWarehouse)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

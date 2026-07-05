@@ -1,15 +1,24 @@
 import { createClient, getCurrentUser, requireRole } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { PO_WORKFLOW_LABELS, PO_WORKFLOW_COLORS } from "@/lib/po-workflow";
+import {
+  PO_WORKFLOW_LABELS,
+  PO_WORKFLOW_COLORS,
+  CLEARANCE_LABELS,
+  CLEARANCE_COLORS,
+  currentEtaToPort,
+} from "@/lib/po-workflow";
 import { DOCUMENT_TYPE_LABELS } from "@/lib/constants";
 import { SupplierDocLink } from "./doc-link";
+import { SupplierDateEditor } from "./date-editor";
 
 function date(d: string | null | undefined) {
   if (!d) return "—";
-  return new Date(d).toLocaleDateString("en-MY", {
+  // DATE columns are plain YYYY-MM-DD — format in UTC to avoid off-by-one.
+  return new Date(`${d}T00:00:00Z`).toLocaleDateString("en-MY", {
     year: "numeric",
     month: "short",
     day: "numeric",
+    timeZone: "UTC",
   });
 }
 
@@ -42,6 +51,7 @@ export default async function SupplierPortalPage() {
       .select(
         "id, po_number, status, currency, invoice_currency, expected_invoice_amount, " +
           "invoice_amount, targeted_eta, actual_eta, created_at, " +
+          "etd, supplier_eta, logistics_eta, eta_to_warehouse, clearance_status, " +
           "po_documents(id, doc_type, file_path, file_name)"
       )
       .eq("supplier_id", me?.id ?? "")
@@ -85,8 +95,10 @@ export default async function SupplierPortalPage() {
                     <th className="py-2 pl-6 pr-3 font-semibold">PO #</th>
                     <th className="py-2 px-3 font-semibold">Status</th>
                     <th className="py-2 px-3 font-semibold text-right">Amount</th>
-                    <th className="py-2 px-3 font-semibold">Ordered</th>
-                    <th className="py-2 px-3 font-semibold">ETA</th>
+                    <th className="py-2 px-3 font-semibold">My dates</th>
+                    <th className="py-2 px-3 font-semibold">ETA to port</th>
+                    <th className="py-2 px-3 font-semibold">Clearance</th>
+                    <th className="py-2 px-3 font-semibold">ETA to WH</th>
                     <th className="py-2 pr-6 pl-3 font-semibold">Documents</th>
                   </tr>
                 </thead>
@@ -122,11 +134,34 @@ export default async function SupplierPortalPage() {
                         <td className="py-2.5 px-3 text-right tabular-nums text-gray-700">
                           {money(amount, cur)}
                         </td>
-                        <td className="py-2.5 px-3 text-gray-600">
-                          {date(po.created_at)}
+                        <td className="py-2.5 px-3">
+                          <SupplierDateEditor
+                            poId={po.id}
+                            etd={po.etd ?? null}
+                            supplierEta={po.supplier_eta ?? null}
+                          />
                         </td>
                         <td className="py-2.5 px-3 text-gray-600">
-                          {date(po.actual_eta || po.targeted_eta)}
+                          {date(currentEtaToPort(po))}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          {po.clearance_status ? (
+                            <span
+                              className={
+                                "inline-block text-[11px] px-1.5 py-0.5 rounded font-medium " +
+                                (CLEARANCE_COLORS[po.clearance_status] ||
+                                  "bg-gray-100 text-gray-700")
+                              }
+                            >
+                              {CLEARANCE_LABELS[po.clearance_status] ||
+                                po.clearance_status}
+                            </span>
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-gray-600">
+                          {date(po.eta_to_warehouse)}
                         </td>
                         <td className="py-2.5 pr-6 pl-3">
                           {docs.length === 0 ? (

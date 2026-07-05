@@ -173,6 +173,13 @@ function StageForm({
   );
 }
 
+export type ReceivingLine = {
+  id: string;
+  label: string;
+  sku: string | null;
+  quantity: number;
+};
+
 type Props = {
   poId: string;
   status: string;
@@ -183,6 +190,8 @@ type Props = {
   hasK1: boolean;
   // Active products for the SHIPPED-stage shipping-lines picker.
   products: ProductOption[];
+  // This PO's incoming_stock lines, itemised in the receiving form.
+  receivingLines: ReceivingLine[];
 };
 
 export function StageForms({
@@ -193,6 +202,7 @@ export function StageForms({
   hasBl,
   hasK1,
   products,
+  receivingLines,
 }: Props) {
   // DRAFT → PO_APPROVED (Accounts/Admin)
   if (status === "DRAFT") {
@@ -262,7 +272,13 @@ export function StageForms({
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <FileField label="Bill of Lading (BL)" name="file_bl" required={!hasBl} />
           <FileField label="K1 (final)" name="file_k1" required={!hasK1} />
-          <Field label="Actual ETA">
+          <Field label="ETD (departure)">
+            <input name="etd" type="date" className={inputCls} />
+          </Field>
+          <Field label="Logistics ETA (to port)">
+            <input name="logistics_eta" type="date" className={inputCls} />
+          </Field>
+          <Field label="Actual port arrival">
             <input name="actual_eta" type="date" className={inputCls} />
           </Field>
         </div>
@@ -323,31 +339,107 @@ export function StageForms({
                 Leave blank to use now.
               </span>
             </Field>
-            <Field label="Received qty">
-              <input
-                name="received_qty"
-                type="number"
-                min="0"
-                className={inputCls}
-                placeholder="units"
-              />
-            </Field>
-            <Field label="Damaged / short qty">
-              <input
-                name="damaged_qty"
-                type="number"
-                min="0"
-                className={inputCls}
-                placeholder="units"
-              />
-            </Field>
           </div>
+
+          {/* Per-line receiving — one row per incoming_stock line. */}
+          {receivingLines.length > 0 ? (
+            <div className="space-y-2">
+              <span className="text-xs text-gray-500 block">
+                Per-line receiving (received / damaged / short / extra)
+              </span>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-gray-500 border-b border-gray-200 text-[11px] uppercase tracking-wide">
+                      <th className="py-1.5 pr-3 font-medium">Product</th>
+                      <th className="py-1.5 px-2 font-medium text-right">Exp</th>
+                      <th className="py-1.5 px-2 font-medium">Received</th>
+                      <th className="py-1.5 px-2 font-medium">Damaged</th>
+                      <th className="py-1.5 px-2 font-medium">Short</th>
+                      <th className="py-1.5 pl-2 font-medium">Extra</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {receivingLines.map((line) => (
+                      <tr key={line.id} className="border-b border-gray-100">
+                        <td className="py-1.5 pr-3 text-gray-900">
+                          {line.label}
+                          {line.sku && (
+                            <span className="text-[11px] text-gray-400 ml-1.5">
+                              {line.sku}
+                            </span>
+                          )}
+                          <input type="hidden" name="recv_line_id" value={line.id} />
+                        </td>
+                        <td className="py-1.5 px-2 text-right tabular-nums text-gray-500">
+                          {line.quantity}
+                        </td>
+                        <td className="py-1.5 px-2">
+                          <input
+                            name="recv_received"
+                            type="number"
+                            min="0"
+                            defaultValue={line.quantity}
+                            className={inputCls + " w-20"}
+                          />
+                        </td>
+                        <td className="py-1.5 px-2">
+                          <input
+                            name="recv_damaged"
+                            type="number"
+                            min="0"
+                            className={inputCls + " w-20"}
+                            placeholder="0"
+                          />
+                        </td>
+                        <td className="py-1.5 px-2">
+                          <input
+                            name="recv_short"
+                            type="number"
+                            min="0"
+                            className={inputCls + " w-20"}
+                            placeholder="0"
+                          />
+                        </td>
+                        <td className="py-1.5 pl-2">
+                          <input
+                            name="recv_extra"
+                            type="number"
+                            min="0"
+                            className={inputCls + " w-20"}
+                            placeholder="0"
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            <p className="text-xs text-gray-400">
+              No shipping lines were captured for this PO — receiving will record
+              the arrival without per-line quantities.
+            </p>
+          )}
+
           <Field label="Remark">
             <input name="remark" className={inputCls} placeholder="optional note" />
           </Field>
-          <FileField label="Proof photo" name="file_proof" />
+          <label className="block">
+            <span className="text-xs text-gray-500 block mb-1">
+              Receipt photos (multiple)
+            </span>
+            <input
+              type="file"
+              name="file_photos"
+              multiple
+              accept=".pdf,.png,.jpg,.jpeg,.webp"
+              className="block w-full text-xs text-gray-600 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:text-xs file:bg-gray-100 file:text-gray-700 hover:file:bg-gray-200"
+            />
+          </label>
           <p className="text-xs text-gray-400">
-            Received/damaged qty and remark are informational — they do not change
+            Per-line quantities and remark are informational — they do not change
             stock levels or KPI snapshots.
           </p>
           {blocked && (

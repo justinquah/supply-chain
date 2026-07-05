@@ -3,7 +3,13 @@
 import { revalidatePath } from "next/cache";
 import { createClient, getCurrentUser } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { PO_DRAFT_CREATORS, canActOnState } from "@/lib/po-workflow";
+import {
+  PO_DRAFT_CREATORS,
+  canActOnState,
+  isClearanceStatus,
+  recomputeBalanceDue,
+  type EtaSource,
+} from "@/lib/po-workflow";
 
 // doc_type -> storage bucket
 const BUCKET: Record<string, string> = {
@@ -76,6 +82,44 @@ function parseShippingLines(formData: FormData): { productId: string; quantity: 
     if (!productId) continue;
     if (!Number.isFinite(quantity) || quantity <= 0) continue;
     lines.push({ productId, quantity: Math.trunc(quantity) });
+  }
+  return lines;
+}
+
+// Parse the per-line receiving rows submitted by the receiving form. Each row
+// is keyed by its incoming_stock id (recv_line_id[]) with parallel
+// recv_received[] / recv_damaged[] / recv_short[] / recv_extra[] fields. A blank
+// numeric cell yields null (left untouched); a present value is coerced to a
+// non-negative integer (negatives clamp to 0).
+type ReceivingLine = {
+  id: string;
+  received: number | null;
+  damaged: number | null;
+  short: number | null;
+  extra: number | null;
+};
+function parseReceivingLines(formData: FormData): ReceivingLine[] {
+  const ids = formData.getAll("recv_line_id").map((v) => String(v).trim());
+  const received = formData.getAll("recv_received").map((v) => String(v).trim());
+  const damaged = formData.getAll("recv_damaged").map((v) => String(v).trim());
+  const short = formData.getAll("recv_short").map((v) => String(v).trim());
+  const extra = formData.getAll("recv_extra").map((v) => String(v).trim());
+  const toInt = (raw: string | undefined): number | null => {
+    if (raw == null || raw === "") return null;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return null;
+    return Math.max(0, Math.trunc(n));
+  };
+  const lines: ReceivingLine[] = [];
+  for (let i = 0; i < ids.length; i++) {
+    if (!ids[i]) continue;
+    lines.push({
+      id: ids[i],
+      received: toInt(received[i]),
+      damaged: toInt(damaged[i]),
+      short: toInt(short[i]),
+      extra: toInt(extra[i]),
+    });
   }
   return lines;
 }
@@ -283,6 +327,9 @@ export async function markShipped(formData: FormData): Promise<ActionResult> {
     return { ok: false, error: "Only Logistics or Admin can mark a PO shipped" };
 
   const actualEta = String(formData.get("actual_eta") || "").trim() || null;
+  // Non-breaking: markShipped may optionally carry ETD / logistics ETA.
+  const etd = String(formData.get("etd") || "").trim() || null;
+  const logisticsEta = String(formData.get("logistics_eta") || "").trim() || null;
   const fileBl = formData.get("file_bl");
   const fileK1 = formData.get("file_k1");
 
@@ -307,22 +354,38 @@ export async function markShipped(formData: FormData): Promise<ActionResult> {
     if (e) return { ok: false, error: e };
   }
 
-  // Fetch po_number + targeted_eta up front — needed for the incoming_stock
-  // expected_date fallback and notes, and read before the status update below.
+  // Fetch po_number + ETA/payment fields up front — needed for the
+  // incoming_stock expected_date fallback and notes, and to re-anchor the
+  // balance due date once actual_eta is set (§5).
   const { data: poRow } = await supabase
     .from("purchase_orders")
-    .select("po_number, targeted_eta")
+    .select("po_number, targeted_eta, supplier_eta, logistics_eta, payment_terms")
     .eq("id", poId)
     .maybeSingle();
 
+  const update: Record<string, unknown> = {
+    actual_eta: actualEta,
+    status: "SHIPPED",
+    issued_by: profile.id,
+    issued_at: new Date().toISOString(),
+  };
+  if (etd) update.etd = etd;
+  if (logisticsEta) update.logistics_eta = logisticsEta;
+
+  // Re-anchor balance_due_date from the payment anchor (actual_eta wins). Uses
+  // the just-set actual_eta / logistics_eta over the previously-stored values.
+  const newBalanceDue = recomputeBalanceDue({
+    targeted_eta: poRow?.targeted_eta,
+    supplier_eta: poRow?.supplier_eta,
+    logistics_eta: logisticsEta ?? poRow?.logistics_eta,
+    actual_eta: actualEta,
+    payment_terms: poRow?.payment_terms,
+  });
+  if (newBalanceDue) update.balance_due_date = newBalanceDue;
+
   const { error } = await supabase
     .from("purchase_orders")
-    .update({
-      actual_eta: actualEta,
-      status: "SHIPPED",
-      issued_by: profile.id,
-      issued_at: new Date().toISOString(),
-    })
+    .update(update)
     .eq("id", poId);
   if (error) return { ok: false, error: error.message };
 
@@ -408,56 +471,66 @@ export async function markReceived(formData: FormData): Promise<ActionResult> {
   }
 
   const remark = String(formData.get("remark") || "").trim();
-  const proof = formData.get("file_proof");
-  const receivedQtyRaw = String(formData.get("received_qty") || "").trim();
-  const damagedQtyRaw = String(formData.get("damaged_qty") || "").trim();
   const containerArrivedAt = String(formData.get("container_arrived_at") || "").trim() || null;
   const unloadCompletedAtRaw = String(formData.get("unload_completed_at") || "").trim();
-
-  const receivedQty = receivedQtyRaw ? Number(receivedQtyRaw) : null;
-  const damagedQty = damagedQtyRaw ? Number(damagedQtyRaw) : null;
-  if (receivedQty != null && (Number.isNaN(receivedQty) || receivedQty < 0))
-    return { ok: false, error: "Received qty must be a non-negative number" };
-  if (damagedQty != null && (Number.isNaN(damagedQty) || damagedQty < 0))
-    return { ok: false, error: "Damaged qty must be a non-negative number" };
 
   // WHS-04: unload_completed_at defaults to now() if not supplied by the actor.
   const unloadCompletedAt = unloadCompletedAtRaw
     ? new Date(unloadCompletedAtRaw).toISOString()
     : new Date().toISOString();
 
-  const update: Record<string, unknown> = {
-    status: "RECEIVED",
-    received_qty: receivedQty,
-    damaged_qty: damagedQty,
-    receipt_remark: remark || null,
-    container_arrived_at: containerArrivedAt,
-    unload_completed_at: unloadCompletedAt,
-  };
+  // --- Per-line receiving ---
+  // The receiving form carries one row per incoming_stock line, keyed by the
+  // line's id: recv_line_id[] + recv_received[]/recv_damaged[]/recv_short[]/recv_extra[].
+  const admin = createAdminClient();
+  const { data: lineRows, error: linesErr } = await admin
+    .from("incoming_stock")
+    .select("id")
+    .eq("po_id", poId);
+  if (linesErr)
+    return { ok: false, error: `Failed to load incoming lines: ${linesErr.message}` };
+  const validLineIds = new Set((lineRows ?? []).map((r) => String(r.id)));
 
-  // Optional proof photo → receipt-photos bucket, path recorded on the PO
-  // (receipt_proof_path — WHS-02). Private bucket; reuse getDocUrl-style signed URLs.
-  if (isFile(proof)) {
-    const path = `${poId}/receipt/${Date.now()}_${slug(proof.name)}`;
-    const buffer = Buffer.from(await proof.arrayBuffer());
-    const { error: upErr } = await supabase.storage
-      .from("receipt-photos")
-      .upload(path, buffer, {
-        contentType: proof.type || "application/octet-stream",
-        upsert: true,
-      });
-    if (upErr) return { ok: false, error: `Proof photo upload failed: ${upErr.message}` };
-    update.receipt_proof_path = `receipt-photos/${path}`;
+  const receivedByLine = parseReceivingLines(formData);
+  const nowIso = new Date().toISOString();
+
+  // Aggregate received/damaged for the PO-level summary fields (kept for the
+  // existing Goods receipt card). Sum across the submitted lines.
+  let aggReceived = 0;
+  let aggDamaged = 0;
+  let sawAnyQty = false;
+
+  for (const line of receivedByLine) {
+    if (!validLineIds.has(line.id)) continue; // ignore lines not on this PO
+    aggReceived += line.received ?? 0;
+    aggDamaged += line.damaged ?? 0;
+    if (
+      line.received != null ||
+      line.damaged != null ||
+      line.short != null ||
+      line.extra != null
+    )
+      sawAnyQty = true;
+
+    const { error: updLineErr } = await admin
+      .from("incoming_stock")
+      .update({
+        qty_received: line.received,
+        qty_damaged: line.damaged,
+        qty_short: line.short,
+        qty_extra: line.extra,
+        received_by: profile.id,
+        received_at: nowIso,
+        status: "ARRIVED",
+      })
+      .eq("id", line.id)
+      .eq("po_id", poId);
+    if (updLineErr)
+      return { ok: false, error: `Failed to record receiving line: ${updLineErr.message}` };
   }
 
-  const { error } = await supabase.from("purchase_orders").update(update).eq("id", poId);
-  if (error) return { ok: false, error: error.message };
-
-  // Clear this PO's incoming_stock rows so they drop off the dashboard's
-  // "Incoming" columns (which only count status='EXPECTED'). incoming_stock
-  // write RLS is SCM/ADMIN only, so the WAREHOUSE write goes through the
-  // service-role client, gated by the canActOnState check above.
-  const admin = createAdminClient();
+  // Any incoming lines the form did not itemise still need to drop off the
+  // dashboard's "Incoming" columns (which only count status='EXPECTED').
   const { error: arrivedErr } = await admin
     .from("incoming_stock")
     .update({ status: "ARRIVED" })
@@ -466,9 +539,234 @@ export async function markReceived(formData: FormData): Promise<ActionResult> {
   if (arrivedErr)
     return { ok: false, error: `Received recorded but failed to clear incoming stock: ${arrivedErr.message}` };
 
+  const update: Record<string, unknown> = {
+    status: "RECEIVED",
+    clearance_status: "RECEIVED",
+    received_qty: sawAnyQty ? aggReceived : null,
+    damaged_qty: sawAnyQty ? aggDamaged : null,
+    receipt_remark: remark || null,
+    unload_completed_at: unloadCompletedAt,
+  };
+  if (containerArrivedAt) update.container_arrived_at = containerArrivedAt;
+
+  // Photos: each uploaded receipt photo → receipt-photos bucket + a
+  // po_receipt_photos row. Private bucket; signed URLs minted on read.
+  // po_receipt_photos write RLS is SCM/ADMIN/WAREHOUSE — but we route through
+  // the admin client for consistency with the incoming_stock writes above
+  // (already gated by canActOnState). First uploaded photo also back-fills the
+  // legacy receipt_proof_path so the existing Goods receipt card keeps working.
+  const photos = formData.getAll("file_photos").filter(isFile) as File[];
+  let firstPhotoPath: string | null = null;
+  for (const photo of photos) {
+    const safeName = slug(photo.name);
+    const objectPath = `${poId}/${crypto.randomUUID()}-${safeName}`;
+    const buffer = Buffer.from(await photo.arrayBuffer());
+    const { error: upErr } = await supabase.storage
+      .from("receipt-photos")
+      .upload(objectPath, buffer, {
+        contentType: photo.type || "application/octet-stream",
+        upsert: true,
+      });
+    if (upErr) return { ok: false, error: `Receipt photo upload failed: ${upErr.message}` };
+    const filePath = `receipt-photos/${objectPath}`;
+    if (!firstPhotoPath) firstPhotoPath = filePath;
+    const { error: photoErr } = await admin.from("po_receipt_photos").insert({
+      po_id: poId,
+      file_path: filePath,
+      caption: remark || null,
+      uploaded_by: profile.id,
+      uploaded_at: nowIso,
+    });
+    if (photoErr) return { ok: false, error: `Failed to record receipt photo: ${photoErr.message}` };
+  }
+  if (firstPhotoPath) update.receipt_proof_path = firstPhotoPath;
+
+  const { error } = await supabase.from("purchase_orders").update(update).eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+
   revalidatePath("/purchase-orders");
   revalidatePath(`/purchase-orders/${poId}`);
   revalidatePath("/warehouse");
   revalidatePath("/dashboard");
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// ETD / ETA chain, clearance, delay — inline field updates (not stage
+// transitions). Each action: (1) authenticates, (2) enforces the who-edits-what
+// matrix app-side, (3) validates, (4) updates ONLY its whitelisted column(s),
+// (5) revalidates the PO detail + dashboard. The column whitelist is the
+// security boundary — RLS on purchase_orders is row-level and cannot restrict
+// which columns a role may write. Internal roles use the session client (their
+// UPDATE passes RLS); we still hard-gate the role in code.
+// ---------------------------------------------------------------------------
+
+// Validate a plain YYYY-MM-DD date string (or empty -> null). Rejects anything
+// else so we never persist malformed values into a DATE column.
+function parseDateInput(raw: FormDataEntryValue | null): string | null {
+  const s = String(raw ?? "").trim();
+  if (!s) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  return s;
+}
+
+// Shared: load the ETA/payment context needed to re-anchor balance_due_date.
+async function loadEtaContext(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  poId: string
+): Promise<EtaSource | null> {
+  const { data } = await supabase
+    .from("purchase_orders")
+    .select("targeted_eta, supplier_eta, logistics_eta, actual_eta, payment_terms")
+    .eq("id", poId)
+    .maybeSingle();
+  return (data as EtaSource) ?? null;
+}
+
+function revalidatePo(poId: string) {
+  revalidatePath("/purchase-orders");
+  revalidatePath(`/purchase-orders/${poId}`);
+  revalidatePath("/dashboard");
+}
+
+// updateEtd — internal callers only (SCM/ADMIN). Suppliers set ETD via the
+// supplier portal action (see supplier/actions.ts updateSupplierDates).
+export async function updateEtd(poId: string, etd: string | null): Promise<ActionResult> {
+  const profile = await getCurrentUser();
+  if (!profile) return { ok: false, error: "Not signed in" };
+  if (!["SCM", "ADMIN"].includes(profile.role as string))
+    return { ok: false, error: "Only SCM or Admin can set ETD here" };
+  const value = parseDateInput(etd);
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("purchase_orders")
+    .update({ etd: value })
+    .eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+  revalidatePo(poId);
+  return { ok: true };
+}
+
+// updateTargetedEta — SCM's ideal ETA-to-port (also set in approvePO).
+export async function updateTargetedEta(poId: string, date: string | null): Promise<ActionResult> {
+  const profile = await getCurrentUser();
+  if (!profile) return { ok: false, error: "Not signed in" };
+  if (!["SCM", "ADMIN"].includes(profile.role as string))
+    return { ok: false, error: "Only SCM or Admin can set the targeted ETA" };
+  const value = parseDateInput(date);
+  const supabase = await createClient();
+  // targeted_eta is the lowest-priority ETA source; only re-anchor payment when
+  // no higher-priority source (supplier/logistics) or actual arrival exists.
+  const ctx = await loadEtaContext(supabase, poId);
+  const update: Record<string, unknown> = { targeted_eta: value };
+  if (ctx) {
+    const newBalanceDue = recomputeBalanceDue({ ...ctx, targeted_eta: value });
+    if (newBalanceDue) update.balance_due_date = newBalanceDue;
+  }
+  const { error } = await supabase.from("purchase_orders").update(update).eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+  revalidatePo(poId);
+  return { ok: true };
+}
+
+// updateLogisticsEta — LOGISTICS/SCM/ADMIN. Re-anchors payment (§5).
+export async function updateLogisticsEta(poId: string, date: string | null): Promise<ActionResult> {
+  const profile = await getCurrentUser();
+  if (!profile) return { ok: false, error: "Not signed in" };
+  if (!["LOGISTICS", "SCM", "ADMIN"].includes(profile.role as string))
+    return { ok: false, error: "Only Logistics, SCM or Admin can set the logistics ETA" };
+  const value = parseDateInput(date);
+  const supabase = await createClient();
+  const ctx = await loadEtaContext(supabase, poId);
+  const update: Record<string, unknown> = { logistics_eta: value };
+  if (ctx) {
+    const newBalanceDue = recomputeBalanceDue({ ...ctx, logistics_eta: value });
+    if (newBalanceDue) update.balance_due_date = newBalanceDue;
+  }
+  const { error } = await supabase.from("purchase_orders").update(update).eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+  revalidatePo(poId);
+  return { ok: true };
+}
+
+// updateEtaToWarehouse — LOGISTICS/SCM/ADMIN. Does not affect payment anchor.
+export async function updateEtaToWarehouse(poId: string, date: string | null): Promise<ActionResult> {
+  const profile = await getCurrentUser();
+  if (!profile) return { ok: false, error: "Not signed in" };
+  if (!["LOGISTICS", "SCM", "ADMIN"].includes(profile.role as string))
+    return { ok: false, error: "Only Logistics, SCM or Admin can set the warehouse ETA" };
+  const value = parseDateInput(date);
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("purchase_orders")
+    .update({ eta_to_warehouse: value })
+    .eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+  revalidatePo(poId);
+  revalidatePath("/warehouse");
+  return { ok: true };
+}
+
+// updateClearanceStatus — LOGISTICS/SCM/ADMIN. Validated against the enum.
+export async function updateClearanceStatus(poId: string, status: string): Promise<ActionResult> {
+  const profile = await getCurrentUser();
+  if (!profile) return { ok: false, error: "Not signed in" };
+  if (!["LOGISTICS", "SCM", "ADMIN"].includes(profile.role as string))
+    return { ok: false, error: "Only Logistics, SCM or Admin can set clearance status" };
+  if (!isClearanceStatus(status))
+    return { ok: false, error: "Invalid clearance status" };
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("purchase_orders")
+    .update({ clearance_status: status })
+    .eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+  revalidatePo(poId);
+  return { ok: true };
+}
+
+// setEtaDelayed — LOGISTICS/SCM/ADMIN. Toggles the delay flag + reason.
+export async function setEtaDelayed(
+  poId: string,
+  delayed: boolean,
+  reason: string | null
+): Promise<ActionResult> {
+  const profile = await getCurrentUser();
+  if (!profile) return { ok: false, error: "Not signed in" };
+  if (!["LOGISTICS", "SCM", "ADMIN"].includes(profile.role as string))
+    return { ok: false, error: "Only Logistics, SCM or Admin can flag a delay" };
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("purchase_orders")
+    .update({
+      eta_delayed: !!delayed,
+      // Clear the reason when un-flagging so stale text doesn't linger.
+      delay_reason: delayed ? (reason?.trim() || null) : null,
+    })
+    .eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+  revalidatePo(poId);
+  return { ok: true };
+}
+
+// updateActualPortArrival — LOGISTICS/SCM/ADMIN. Setting it re-anchors payment
+// (§5): the actual arrival is the highest-priority payment anchor.
+export async function updateActualPortArrival(poId: string, date: string | null): Promise<ActionResult> {
+  const profile = await getCurrentUser();
+  if (!profile) return { ok: false, error: "Not signed in" };
+  if (!["LOGISTICS", "SCM", "ADMIN"].includes(profile.role as string))
+    return { ok: false, error: "Only Logistics, SCM or Admin can set the actual port arrival" };
+  const value = parseDateInput(date);
+  const supabase = await createClient();
+  const ctx = await loadEtaContext(supabase, poId);
+  const update: Record<string, unknown> = { actual_eta: value };
+  if (ctx) {
+    const newBalanceDue = recomputeBalanceDue({ ...ctx, actual_eta: value });
+    if (newBalanceDue) update.balance_due_date = newBalanceDue;
+  }
+  const { error } = await supabase.from("purchase_orders").update(update).eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+  revalidatePo(poId);
+  revalidatePath("/warehouse");
   return { ok: true };
 }

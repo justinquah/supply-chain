@@ -5,12 +5,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DocBadges } from "../doc-badge";
 import { Stepper } from "./stepper";
 import { StageForms } from "./stage-forms";
+import { ShipmentForms } from "./shipment-forms";
 import { ReceiptProofLink } from "./receipt-proof-link";
 import {
   PO_WORKFLOW_COLORS,
   PO_WORKFLOW_LABELS,
   canActOnState,
   waitingOnLabel,
+  currentEtaToPort,
 } from "@/lib/po-workflow";
 
 function money(n: number | null | undefined, cur: string | null | undefined) {
@@ -80,6 +82,7 @@ export default async function PurchaseOrderDetailPage({
           "id, po_number, status, currency, invoice_currency, product_group, " +
             "expected_invoice_amount, deposit_percent, payment_terms, deposit_due_date, balance_due_date, " +
             "invoice_amount, invoice_number, invoice_date, targeted_eta, actual_eta, notes, created_at, " +
+            "etd, supplier_eta, logistics_eta, eta_to_warehouse, clearance_status, eta_delayed, delay_reason, " +
             "container_arrived_at, unload_completed_at, received_qty, damaged_qty, receipt_remark, receipt_proof_path, " +
             "supplier:profiles!supplier_id(name, company_name), " +
             "po_documents(id, doc_type, file_path, file_name, uploaded_at)"
@@ -97,10 +100,15 @@ export default async function PurchaseOrderDetailPage({
         .select("id, sku, name, product_family, variation")
         .eq("is_active", true)
         .order("name"),
-      // This PO's shipping lines / incoming stock (shown read-only below).
+      // This PO's shipping lines / incoming stock (shown read-only below +
+      // itemised in the receiving form).
       supabase
         .from("incoming_stock")
-        .select("id, quantity, expected_date, status, notes, product:products(sku, name, product_family, variation)")
+        .select(
+          "id, quantity, expected_date, status, notes, " +
+            "qty_received, qty_damaged, qty_short, qty_extra, " +
+            "product:products(sku, name, product_family, variation)"
+        )
         .eq("po_id", id)
         .order("expected_date"),
     ]);
@@ -132,6 +140,33 @@ export default async function PurchaseOrderDetailPage({
   const waitingOn = waitingOnLabel(poRow.status);
 
   const balanceRemaining = Number(bal?.balance_remaining ?? 0);
+
+  // Who-edits-what matrix for the Shipment & ETA card (see actions.ts).
+  const isScmAdmin = role === "SCM" || role === "ADMIN";
+  const isLogistics = role === "LOGISTICS" || isScmAdmin;
+  const shipmentCaps = {
+    canEtd: isScmAdmin,
+    canTargeted: isScmAdmin,
+    canSupplierEta: false, // supplier edits via portal; read-only here
+    canLogistics: isLogistics,
+    canWarehouseEta: isLogistics,
+    canClearance: isLogistics,
+    canActual: isLogistics,
+    canDelay: isLogistics,
+  };
+  const shipmentData = {
+    poId: poRow.id as string,
+    etd: (poRow.etd ?? null) as string | null,
+    targeted_eta: (poRow.targeted_eta ?? null) as string | null,
+    supplier_eta: (poRow.supplier_eta ?? null) as string | null,
+    logistics_eta: (poRow.logistics_eta ?? null) as string | null,
+    current_eta_to_port: currentEtaToPort(poRow as any),
+    actual_eta: (poRow.actual_eta ?? null) as string | null,
+    eta_to_warehouse: (poRow.eta_to_warehouse ?? null) as string | null,
+    clearance_status: (poRow.clearance_status ?? null) as string | null,
+    eta_delayed: !!poRow.eta_delayed,
+    delay_reason: (poRow.delay_reason ?? null) as string | null,
+  };
 
   return (
     <div className="space-y-6">
@@ -221,6 +256,21 @@ export default async function PurchaseOrderDetailPage({
           </CardContent>
         </Card>
       </div>
+
+      {/* Shipment & ETA */}
+      <Card>
+        <CardHeader className="flex-row items-center justify-between">
+          <CardTitle>Shipment &amp; ETA</CardTitle>
+          {shipmentData.eta_delayed && (
+            <span className="text-[11px] px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-700">
+              Delayed
+            </span>
+          )}
+        </CardHeader>
+        <CardContent>
+          <ShipmentForms data={shipmentData} caps={shipmentCaps} />
+        </CardContent>
+      </Card>
 
       {/* Documents */}
       <Card>
@@ -362,6 +412,22 @@ export default async function PurchaseOrderDetailPage({
               hasBl={docTypes.has("BL")}
               hasK1={docTypes.has("K1_FINAL")}
               products={productOptions}
+              receivingLines={incomingRows.map((r) => ({
+                id: r.id as string,
+                label: (() => {
+                  const p = r.product as {
+                    sku?: string;
+                    name?: string;
+                    product_family?: string | null;
+                    variation?: string | null;
+                  } | null;
+                  return p?.product_family
+                    ? `${p.product_family}${p.variation ? " — " + p.variation : ""}`
+                    : p?.name || "—";
+                })(),
+                sku: (r.product as { sku?: string } | null)?.sku ?? null,
+                quantity: r.quantity as number,
+              }))}
             />
           ) : (
             <p className="text-sm text-gray-600">
