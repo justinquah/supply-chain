@@ -13,17 +13,93 @@ function num(v: number, dp = 0) {
     maximumFractionDigits: dp,
   });
 }
+function pct(v: number | null | undefined) {
+  return v == null ? "—" : num(Number(v), 1) + "%";
+}
+type Status = "good" | "bad" | "warn" | "neutral";
+function statusOver(v: number | null): Status {
+  if (v == null) return "neutral";
+  return v <= 20 ? "good" : v <= 40 ? "warn" : "bad";
+}
+function statusOos(v: number | null): Status {
+  if (v == null) return "neutral";
+  return v <= 5 ? "good" : v <= 10 ? "warn" : "bad";
+}
+function statusHealthy(v: number | null): Status {
+  if (v == null) return "neutral";
+  return v >= 60 ? "good" : v >= 40 ? "warn" : "bad";
+}
 
-export default async function KpiPage() {
+type Grain = "month" | "quarter" | "fy";
+
+export default async function KpiPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ g?: string }>;
+}) {
   // Internal-only: rejects STAFF and SUPPLIER.
   await requireRole("SCM", "ADMIN", "ACCOUNTS", "FINANCE", "WAREHOUSE", "LOGISTICS");
   const supabase = await createClient();
+  const sp = await searchParams;
+  const grain: Grain =
+    sp.g === "quarter" || sp.g === "fy" ? (sp.g as Grain) : "month";
 
-  const [{ data: monthly }, { data: dash }, { data: weekly }] = await Promise.all([
+  const [
+    { data: monthly },
+    { data: dash },
+    { data: weekly },
+    { data: kMonthly },
+    { data: kQuarterly },
+    { data: kFy },
+    { data: kSnap },
+  ] = await Promise.all([
     supabase.from("monthly_kpi").select("*"),
     supabase.from("product_dashboard").select("*").eq("is_main", true).eq("is_active", true),
     supabase.from("inventory_weekly").select("*"),
+    supabase.from("kpi_monthly").select("*"),
+    supabase.from("kpi_quarterly").select("*"),
+    supabase.from("kpi_fy").select("*"),
+    supabase.from("kpi_snapshot").select("*"),
   ]);
+
+  // ---- Stock Health KPI (Overstock % / OOS % / Healthy %) ----
+  const kMonths = [...(kMonthly ?? [])].sort(
+    (a: any, b: any) => a.cal_year - b.cal_year || a.cal_month - b.cal_month
+  );
+  const kQtrs = [...(kQuarterly ?? [])].sort(
+    (a: any, b: any) => a.fy - b.fy || a.fy_q - b.fy_q
+  );
+  const kFys = [...(kFy ?? [])].sort((a: any, b: any) => a.fy - b.fy);
+
+  // Selected period = latest available row for the chosen grain.
+  let selKpi: any = null;
+  let selLabel = "—";
+  if (grain === "month" && kMonths.length) {
+    selKpi = kMonths[kMonths.length - 1];
+    selLabel = `${MONTHS[selKpi.cal_month]} ${selKpi.cal_year}`;
+  } else if (grain === "quarter" && kQtrs.length) {
+    selKpi = kQtrs[kQtrs.length - 1];
+    selLabel = `Q${selKpi.fy_q} ${selKpi.fy_label}`;
+  } else if (grain === "fy" && kFys.length) {
+    selKpi = kFys[kFys.length - 1];
+    selLabel = selKpi.fy_label;
+  }
+
+  // Drill-down: latest week's eligible classification.
+  const snaps = kSnap ?? [];
+  const latestWeek = snaps.reduce(
+    (mx: string | null, s: any) => (mx == null || s.week_start > mx ? s.week_start : mx),
+    null as string | null
+  );
+  const latestRows = snaps.filter(
+    (s: any) => s.week_start === latestWeek && s.eligible
+  );
+  const oosList = latestRows
+    .filter((s: any) => s.klass === "OOS")
+    .sort((a: any, b: any) => a.sku.localeCompare(b.sku));
+  const overList = latestRows
+    .filter((s: any) => s.klass === "OVERSTOCK")
+    .sort((a: any, b: any) => Number(b.stock) - Number(a.stock));
 
   const months = monthly ?? [];
   const products = dash ?? [];
@@ -74,6 +150,133 @@ export default async function KpiPage() {
           Scorecard for the Supply Chain Manager · target coverage {IDEAL} months
         </p>
       </div>
+
+      {/* ============ Stock Health KPI (the locked KPI) ============ */}
+      <Card>
+        <CardHeader className="flex-row items-center justify-between gap-3 flex-wrap">
+          <div>
+            <CardTitle>Stock Health — Overstock / OOS / Healthy</CardTitle>
+            <p className="text-xs text-gray-500 mt-1">
+              Eligible SKUs classified each weekly snapshot · OOS = 0 · Overstock &gt;
+              2×AMS(3-mo) · {selKpi ? `showing ${selLabel}` : "no data yet"}
+            </p>
+          </div>
+          <div className="flex items-center gap-1 rounded-lg bg-gray-100 p-1 text-sm">
+            {(["month", "quarter", "fy"] as Grain[]).map((g) => (
+              <a
+                key={g}
+                href={`/kpi?g=${g}`}
+                className={
+                  "px-3 py-1 rounded-md capitalize " +
+                  (grain === g
+                    ? "bg-white shadow-sm font-medium text-gray-900"
+                    : "text-gray-500 hover:text-gray-800")
+                }
+              >
+                {g === "fy" ? "FY" : g}
+              </a>
+            ))}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          {selKpi ? (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <Score
+                  label="Overstock %"
+                  value={pct(selKpi.overstock_pct)}
+                  target="stock > 2× AMS(3-mo)"
+                  status={statusOver(selKpi.overstock_pct)}
+                />
+                <Score
+                  label="Out of stock %"
+                  value={pct(selKpi.oos_pct)}
+                  target="stock = 0"
+                  status={statusOos(selKpi.oos_pct)}
+                />
+                <Score
+                  label="Healthy %"
+                  value={pct(selKpi.healthy_pct)}
+                  target="0 < stock ≤ 2× AMS"
+                  status={statusHealthy(selKpi.healthy_pct)}
+                />
+              </div>
+
+              {/* Monthly trend of the three % */}
+              {kMonths.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-gray-500 border-b border-gray-200">
+                        <th className="py-2 pr-3 font-medium">KPI</th>
+                        {kMonths.map((m: any) => (
+                          <th
+                            key={`${m.cal_year}-${m.cal_month}`}
+                            className="py-2 px-3 font-medium text-right whitespace-nowrap"
+                          >
+                            {MONTHS[m.cal_month]} {String(m.cal_year).slice(2)}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <KpiRow
+                        label="Overstock %"
+                        values={kMonths.map((m: any) => pct(m.overstock_pct))}
+                        bold
+                      />
+                      <KpiRow
+                        label="Out of stock %"
+                        values={kMonths.map((m: any) => pct(m.oos_pct))}
+                      />
+                      <KpiRow
+                        label="Healthy %"
+                        values={kMonths.map((m: any) => pct(m.healthy_pct))}
+                      />
+                      <KpiRow
+                        label="Eligible SKUs"
+                        values={kMonths.map((m: any) => num(Number(m.eligible_n || 0)))}
+                        muted
+                      />
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Drill-down: current problem SKUs */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <DrillList
+                  title={`Out of stock now (${oosList.length})`}
+                  tone="bad"
+                  rows={oosList.map((s: any) => ({
+                    sku: s.sku,
+                    right: "0 in stock",
+                  }))}
+                  empty="None — nothing at zero."
+                />
+                <DrillList
+                  title={`Overstocked now (${overList.length})`}
+                  tone="warn"
+                  rows={overList.slice(0, 12).map((s: any) => {
+                    const ams = Number(s.ams_3mo);
+                    const cover = ams > 0 ? num(Number(s.stock) / ams, 1) + " mo" : "no sales";
+                    return {
+                      sku: s.sku,
+                      right: `${num(Number(s.stock))} u · ${cover}`,
+                    };
+                  })}
+                  empty="None over 2× AMS."
+                />
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-gray-500 py-4">
+              No KPI data yet for this view. The KPI populates once a weekly stock
+              snapshot and the prior 3 months of sales are present.
+            </p>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Current position scorecard */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -212,6 +415,40 @@ function Score({
       </div>
       <div className={"text-2xl font-semibold mt-1 " + color}>{value}</div>
       <div className="text-xs text-gray-400 mt-0.5">{target}</div>
+    </div>
+  );
+}
+
+function DrillList({
+  title,
+  tone,
+  rows,
+  empty,
+}: {
+  title: string;
+  tone: "bad" | "warn";
+  rows: { sku: string; right: string }[];
+  empty: string;
+}) {
+  const dot = tone === "bad" ? "bg-red-500" : "bg-amber-500";
+  return (
+    <div className="rounded-lg border border-gray-200 p-3">
+      <div className="flex items-center gap-1.5 mb-2">
+        <span className={"h-2 w-2 rounded-full " + dot} />
+        <div className="text-sm font-medium text-gray-800">{title}</div>
+      </div>
+      {rows.length === 0 ? (
+        <p className="text-xs text-gray-400 py-1">{empty}</p>
+      ) : (
+        <ul className="divide-y divide-gray-100">
+          {rows.map((r) => (
+            <li key={r.sku} className="flex items-center justify-between py-1.5 text-sm">
+              <span className="text-gray-700 font-mono text-xs">{r.sku}</span>
+              <span className="text-gray-500 tabular-nums text-xs">{r.right}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
