@@ -60,6 +60,15 @@ export default async function DashboardPage({
   const prevMonth = curMonth === 1 ? 12 : curMonth - 1;
   const prevYear = curMonth === 1 ? curYear - 1 : curYear;
 
+  // Labels for the 3 incoming-arrival buckets: current month, +1, +2 (KL), with a
+  // year suffix when the bucket rolls into a different year.
+  const incMonthLabels = [0, 1, 2].map((off) => {
+    const base = curMonth - 1 + off;
+    const y = curYear + Math.floor(base / 12);
+    const m = (base % 12) + 1;
+    return MONTHS[m] + (y !== curYear ? ` '${String(y).slice(2)}` : "");
+  }) as [string, string, string];
+
   // Use the as-of function so AMS reflects the 3 months ending at the selected month
   const [
     { data: rows },
@@ -312,6 +321,7 @@ export default async function DashboardPage({
             incomingMap={incomingMap}
             lastMonthSalesMap={lastMonthSalesMap}
             hideValue={!canSeeValue}
+            incomingMonthLabels={incMonthLabels}
           />
         </CardContent>
       </Card>

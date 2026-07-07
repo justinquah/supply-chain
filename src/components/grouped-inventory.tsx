@@ -65,6 +65,7 @@ export function GroupedInventory({
   incomingMap,
   lastMonthSalesMap,
   hideValue = false,
+  incomingMonthLabels = ["This mo", "Next mo", "Following"],
 }: {
   products: ProductRow[];
   /** product_id → IncomingBuckets (may be absent if no incoming) */
@@ -73,6 +74,8 @@ export function GroupedInventory({
   lastMonthSalesMap?: Record<string, number>;
   /** Hide the monetary "Inv. value" column entirely (STAFF restricted view). */
   hideValue?: boolean;
+  /** Headers for the 3 incoming-arrival buckets: [this month, +1, +2]. */
+  incomingMonthLabels?: [string, string, string];
 }) {
   // All multi-product families start expanded
   const [open, setOpen] = useState<Record<string, boolean>>({});
@@ -143,9 +146,9 @@ export function GroupedInventory({
             <th className="pb-2 px-3 font-medium text-right border-l border-gray-200">AMS</th>
             <th className="pb-2 px-3 font-medium text-right">Online</th>
             <th className="pb-2 px-3 font-medium text-right">Offline</th>
-            <th className="pb-2 px-3 font-medium text-right border-l border-gray-200">This mo</th>
-            <th className="pb-2 px-3 font-medium text-right">Next mo</th>
-            <th className="pb-2 px-3 font-medium text-right">Following</th>
+            <th className="pb-2 px-3 font-medium text-right border-l border-gray-200">{incomingMonthLabels[0]}</th>
+            <th className="pb-2 px-3 font-medium text-right">{incomingMonthLabels[1]}</th>
+            <th className="pb-2 px-3 font-medium text-right">{incomingMonthLabels[2]}</th>
           </tr>
         </thead>
         <tbody>
