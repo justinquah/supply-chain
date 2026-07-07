@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient, getCurrentUser } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { GroupedInventory, type ProductRow, type IncomingBuckets } from "@/components/grouped-inventory";
-import { MonthSelector } from "@/components/month-selector";
+import { WeekSelector } from "@/components/week-selector";
 
 const IDEAL = 1.5;
 
@@ -17,15 +17,10 @@ function num(v: number, dp = 0) {
 }
 const MONTHS = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-/** Format a date like "11 May 2026" */
-function fmtDate(d: Date): string {
-  return `${d.getDate()} ${MONTHS[d.getMonth() + 1]} ${d.getFullYear()}`;
-}
-
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ y?: string; m?: string }>;
+  searchParams: Promise<{ w?: string }>;
 }) {
   // SUPPLIER users have no inventory dashboard — send them to their portal.
   const me = await getCurrentUser();
@@ -36,18 +31,19 @@ export default async function DashboardPage({
   const supabase = await createClient();
   const sp = await searchParams;
 
-  // Available months from sales data
-  const { data: monthRows } = await supabase
-    .from("monthly_kpi")
-    .select("year, month");
-  const months = (monthRows ?? []).map((r) => ({ year: r.year, month: r.month }));
-  const latest = months[months.length - 1] ?? {
-    year: new Date().getFullYear(),
-    month: new Date().getMonth() + 1,
-  };
-  const selYear = sp.y ? Number(sp.y) : latest.year;
-  const selMonth = sp.m ? Number(sp.m) : latest.month;
-  const isLatest = selYear === latest.year && selMonth === latest.month;
+  // Available stock-upload weeks (distinct snapshot dates, KL tz) — the dashboard's time axis.
+  const { data: weekRows } = await supabase
+    .from("stock_upload_weeks")
+    .select("snapshot_date");
+  const snapWeeks = (weekRows ?? []).map((r) => r.snapshot_date as string);
+  const latestSnapWeek = snapWeeks[snapWeeks.length - 1] ?? null;
+  const selWeek =
+    sp.w && snapWeeks.includes(sp.w) ? sp.w : latestSnapWeek;
+  const isLatest = selWeek === latestSnapWeek;
+  // AMS window = the calendar month of the selected stock week.
+  const selDate = selWeek ? new Date(selWeek + "T00:00:00Z") : new Date();
+  const selYear = selDate.getUTCFullYear();
+  const selMonth = selDate.getUTCMonth() + 1;
 
   // Today in Asia/Kuala_Lumpur for bucketing
   const nowKL = new Date(
@@ -75,9 +71,10 @@ export default async function DashboardPage({
     { data: weekly },
     { data: incomingRows },
     { data: lastMonthRows },
-    { data: stockDateRow },
   ] = await Promise.all([
-    supabase.rpc("product_dashboard_asof", { p_year: selYear, p_month: selMonth }),
+    selWeek
+      ? supabase.rpc("product_dashboard_asof_date", { p_date: selWeek })
+      : Promise.resolve({ data: [] as any[] }),
     supabase.from("inventory_weekly").select("*"),
     // Incoming stock bucketed (status=EXPECTED only)
     supabase
@@ -90,13 +87,6 @@ export default async function DashboardPage({
       .select("main_product_id, units_equivalent")
       .eq("year", prevYear)
       .eq("month", prevMonth),
-    // Latest stock snapshot date
-    supabase
-      .from("stock_snapshots")
-      .select("recorded_at")
-      .order("recorded_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
   ]);
 
   const products = ((rows ?? []) as any[])
@@ -138,9 +128,12 @@ export default async function DashboardPage({
       (lastMonthSalesMap[row.main_product_id] ?? 0) + Number(row.units_equivalent || 0);
   }
 
-  // Latest stock snapshot date for display
-  const stockAsOf: string | null = stockDateRow?.recorded_at
-    ? fmtDate(new Date(stockDateRow.recorded_at))
+  // The selected stock-upload week, for display (format the date string directly, no TZ shift).
+  const stockAsOf: string | null = selWeek
+    ? (() => {
+        const [y, m, d] = selWeek.split("-").map(Number);
+        return `${d} ${MONTHS[m]} ${y}`;
+      })()
     : null;
 
   // KPIs
@@ -184,20 +177,18 @@ export default async function DashboardPage({
         <div>
           <h1 className="text-2xl font-semibold">Inventory Dashboard</h1>
           <p className="text-sm text-gray-500 mt-1">
-            By product range · AMS = 3 months ending {MONTHS[selMonth]} {selYear}
+            By product range · stock as of {stockAsOf ?? "—"} · AMS = 3 months ending{" "}
+            {MONTHS[selMonth]} {selYear}
             {canSeeValue && " · values in MYR"}
             {!isLatest && (
               <span className="ml-2 text-amber-600">
-                (viewing historical month)
+                (viewing an earlier week)
               </span>
             )}
           </p>
         </div>
-        {months.length > 0 && (
-          <MonthSelector
-            months={months}
-            selected={{ year: selYear, month: selMonth }}
-          />
+        {snapWeeks.length > 0 && selWeek && (
+          <WeekSelector weeks={snapWeeks} selected={selWeek} />
         )}
       </div>
 
