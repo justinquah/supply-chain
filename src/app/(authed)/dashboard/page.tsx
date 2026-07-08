@@ -44,6 +44,9 @@ export default async function DashboardPage({
   const selDate = selWeek ? new Date(selWeek + "T00:00:00Z") : new Date();
   const selYear = selDate.getUTCFullYear();
   const selMonth = selDate.getUTCMonth() + 1;
+  // AMS window = the 3 completed months BEFORE the stock month; label shows the window's end.
+  const amsEndMonth = selMonth === 1 ? 12 : selMonth - 1;
+  const amsEndYear = selMonth === 1 ? selYear - 1 : selYear;
 
   // Today in Asia/Kuala_Lumpur for bucketing
   const nowKL = new Date(
@@ -178,7 +181,7 @@ export default async function DashboardPage({
           <h1 className="text-2xl font-semibold">Inventory Dashboard</h1>
           <p className="text-sm text-gray-500 mt-1">
             By product range · stock as of {stockAsOf ?? "—"} · AMS = 3 months ending{" "}
-            {MONTHS[selMonth]} {selYear}
+            {MONTHS[amsEndMonth]} {amsEndYear}
             {canSeeValue && " · values in MYR"}
             {!isLatest && (
               <span className="ml-2 text-amber-600">
