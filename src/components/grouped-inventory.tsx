@@ -128,11 +128,11 @@ export function GroupedInventory({
   }
 
   return (
-    <div className="overflow-x-auto bg-white rounded-lg border border-gray-200">
+    <div className="overflow-auto max-h-[75vh] bg-white rounded-lg border border-gray-200">
       <table className="w-full text-sm">
-        <thead>
+        <thead className="sticky top-0 z-20">
           <tr className="text-gray-500 border-b border-gray-100 bg-gray-50 text-[11px] uppercase tracking-wide">
-            <th className="pt-2.5 pb-1 pl-4 pr-3 font-semibold text-left" rowSpan={2}>Product range</th>
+            <th className="pt-2.5 pb-1 pl-4 pr-3 font-semibold text-left sticky left-0 z-30 bg-gray-50" rowSpan={2}>Product range</th>
             <th className="pt-2.5 pb-1 px-3 font-semibold text-right" rowSpan={2}>Stock</th>
             <th className="pt-2.5 pb-1 px-3 font-semibold text-center border-l border-gray-200" colSpan={3}>Avg monthly sales (3-mo)</th>
             <th className="pt-2.5 pb-1 px-3 font-semibold text-right border-l border-gray-200" rowSpan={2}>Sold<br/>last mo</th>
@@ -166,7 +166,7 @@ export function GroupedInventory({
                     multi && setOpen((o) => ({ ...o, [g.family]: !isOpen(g.family, true) }))
                   }
                 >
-                  <td className="py-2.5 pl-4 pr-3 font-medium text-gray-900">
+                  <td className="py-2.5 pl-4 pr-3 font-medium text-gray-900 sticky left-0 z-10 bg-white">
                     <span className="inline-flex items-center gap-1.5">
                       {multi && (
                         <span className="text-gray-400 text-xs w-3">
@@ -228,7 +228,7 @@ export function GroupedInventory({
                           key={p.id}
                           className="border-b border-gray-100 bg-gray-50/40 text-gray-600"
                         >
-                          <td className="py-1.5 pl-10 pr-3">
+                          <td className="py-1.5 pl-10 pr-3 sticky left-0 z-10 bg-gray-50">
                             {p.variation || p.name}
                             <span className="text-xs text-gray-400 ml-2">
                               {p.sku}

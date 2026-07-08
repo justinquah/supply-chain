@@ -88,11 +88,11 @@ export function SalesTrendTable({
   const prevMonthKey = months.length > 1 ? monthKey(months[months.length - 2]) : null;
 
   return (
-    <div className="overflow-x-auto bg-white rounded-lg border border-gray-200">
+    <div className="overflow-auto max-h-[75vh] bg-white rounded-lg border border-gray-200">
       <table className="w-full text-sm">
-        <thead>
+        <thead className="sticky top-0 z-20">
           <tr className="text-left text-gray-500 border-b border-gray-200 bg-gray-50 text-[11px] uppercase tracking-wide">
-            <th className="py-2 pl-4 pr-3 font-semibold">Product range</th>
+            <th className="py-2 pl-4 pr-3 font-semibold sticky left-0 z-30 bg-gray-50">Product range</th>
             {months.map((m) => (
               <th
                 key={monthKey(m)}
@@ -118,7 +118,7 @@ export function SalesTrendTable({
                     multi && setOpen((o) => ({ ...o, [g.family]: !isOpen(g.family, true) }))
                   }
                 >
-                  <td className="py-2.5 pl-4 pr-3 font-medium text-gray-900">
+                  <td className="py-2.5 pl-4 pr-3 font-medium text-gray-900 sticky left-0 z-10 bg-white">
                     <span className="inline-flex items-center gap-1.5">
                       {multi && (
                         <span className="text-gray-400 text-xs w-3">
@@ -162,7 +162,7 @@ export function SalesTrendTable({
                         key={p.id}
                         className="border-b border-gray-100 bg-gray-50/40 text-gray-600"
                       >
-                        <td className="py-1.5 pl-10 pr-3">
+                        <td className="py-1.5 pl-10 pr-3 sticky left-0 z-10 bg-gray-50">
                           {p.variation || p.name}
                           <span className="text-xs text-gray-400 ml-2">{p.sku}</span>
                         </td>
