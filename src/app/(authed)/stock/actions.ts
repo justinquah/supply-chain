@@ -143,10 +143,16 @@ export async function importStock(formData: FormData): Promise<ImportStockResult
   // is counted in the SAME main-SKU units as sales (mirrors the sales importer).
   const resolveMap = new Map<string, { productId: string; factor: number }>();
 
-  const { data: products, error: prodErr } = await supabase.from("products").select("id, sku");
+  const { data: products, error: prodErr } = await supabase
+    .from("products")
+    .select("id, sku, stock_pieces_per_unit");
   if (prodErr) return { ok: false, error: `Could not load products: ${prodErr.message}` };
   for (const p of products ?? []) {
-    resolveMap.set(String(p.sku).trim().toUpperCase(), { productId: p.id, factor: 1 });
+    // When the stock file counts individual pieces under the product's own (pack) SKU,
+    // divide by stock_pieces_per_unit to get sellable main units (e.g. a 500g×16 pack SKU
+    // whose file quantity is in 500g pieces → ÷16). Default 1 = counted as main units.
+    const per = Number((p as { stock_pieces_per_unit?: number }).stock_pieces_per_unit) || 1;
+    resolveMap.set(String(p.sku).trim().toUpperCase(), { productId: p.id, factor: 1 / per });
   }
 
   const { data: mappings, error: mapErr } = await supabase
