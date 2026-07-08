@@ -174,6 +174,44 @@ export default async function DashboardPage({
   const weeks = weekly ?? [];
   const latestWeek = weeks[weeks.length - 1];
 
+  // Action lists: what to replenish (below target) vs push (overstock).
+  const OVER = IDEAL * 2; // 3.0 mo = clearly overstocked
+  const understock = products
+    .filter((p) => p.ams_total > 0 && p.coverage_months != null && Number(p.coverage_months) < IDEAL)
+    .sort((a, b) => Number(a.coverage_months) - Number(b.coverage_months));
+  const overstock = products
+    .filter((p) => p.ams_total > 0 && p.coverage_months != null && Number(p.coverage_months) > OVER)
+    .sort((a, b) => Number(b.coverage_months) - Number(a.coverage_months));
+
+  // Weighted-turnover status (target IDEAL): red when clearly over/under.
+  const turnoverOver = weightedTurnover != null && weightedTurnover > OVER;
+  const turnoverUnder = weightedTurnover != null && weightedTurnover < IDEAL * 0.75;
+  const turnoverDanger = turnoverOver || turnoverUnder;
+  const turnoverSub = turnoverOver
+    ? `target ${IDEAL} mo · overstocked`
+    : turnoverUnder
+    ? `target ${IDEAL} mo · below target`
+    : `target ${IDEAL} mo · on track`;
+
+  // Weighted turnover per stock week, to show the trend toward target.
+  const weekTurnovers = await Promise.all(
+    snapWeeks.map(async (w) => {
+      const { data } = await supabase.rpc("product_dashboard_asof_date", { p_date: w });
+      const ps = ((data ?? []) as any[]).filter((p) => p.is_main && p.is_active);
+      let n = 0,
+        dn = 0;
+      for (const p of ps) {
+        const c = p.coverage_months;
+        const sv = Number(p.monthly_sales_value_myr || 0);
+        if (c != null && sv > 0) {
+          n += Number(c) * sv;
+          dn += sv;
+        }
+      }
+      return { week: w, turnover: dn > 0 ? n / dn : null };
+    })
+  );
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -207,8 +245,8 @@ export default async function DashboardPage({
             <Kpi
               label="Weighted turnover"
               value={weightedTurnover == null ? "—" : num(weightedTurnover, 2) + " mo"}
-              sub={`target ${IDEAL} mo · weighted by sales value`}
-              danger={weightedTurnover != null && weightedTurnover < IDEAL}
+              sub={turnoverSub}
+              danger={turnoverDanger}
             />
             <Kpi
               label="Monthly sales value"
@@ -244,11 +282,71 @@ export default async function DashboardPage({
         />
       </div>
 
-      {/* Inventory health by week — value chart, hidden for STAFF */}
+      {/* Action lists: replenish (below target) vs push sales (overstock) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <ActionList
+          title={`Replenish — below ${IDEAL} mo (${understock.length})`}
+          tone="bad"
+          hint="running low · order / expedite"
+          rows={understock.map((p) => ({
+            sku: p.sku,
+            right: `${num(Number(p.coverage_months), 1)} mo · ${num(Number(p.current_stock))} u`,
+          }))}
+          empty="Nothing below target."
+        />
+        <ActionList
+          title={`Push sales — overstock > ${OVER} mo (${overstock.length})`}
+          tone="warn"
+          hint="excess stock · promote / push harder"
+          rows={overstock.map((p) => ({
+            sku: p.sku,
+            right: `${num(Number(p.coverage_months), 1)} mo · ${num(Number(p.current_stock))} u`,
+          }))}
+          empty="No ranges heavily overstocked."
+        />
+      </div>
+
+      {/* Weighted turnover by week — progress toward target */}
+      {canSeeValue && weekTurnovers.some((w) => w.turnover != null) && (
+        <Card>
+          <CardHeader className="flex-row items-center justify-between">
+            <CardTitle>Weighted turnover by week</CardTitle>
+            <span className="text-xs text-gray-500">target {IDEAL} mo</span>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-end gap-4 flex-wrap">
+              {weekTurnovers.map((w) => {
+                const t = w.turnover;
+                const maxT = Math.max(IDEAL * 2, ...weekTurnovers.map((x) => x.turnover ?? 0));
+                const h = t != null && maxT > 0 ? (t / maxT) * 80 : 0;
+                const off = t != null && (t > OVER || t < IDEAL * 0.75);
+                const [y, m, d] = w.week.split("-").map(Number);
+                return (
+                  <div key={w.week} className="flex flex-col items-center gap-1">
+                    <div className={"text-xs tabular-nums " + (off ? "text-red-600 font-medium" : "text-gray-600")}>
+                      {t == null ? "—" : num(t, 2) + " mo"}
+                    </div>
+                    <div
+                      className={"w-12 rounded-t " + (off ? "bg-red-500" : "bg-emerald-500")}
+                      style={{ height: `${Math.max(h, 4)}px` }}
+                    />
+                    <div className="text-[10px] text-gray-400">{MONTHS[m]} {d}</div>
+                  </div>
+                );
+              })}
+              <div className="ml-4 text-sm text-gray-500 self-center">
+                Green = near target ({IDEAL} mo) · Red = over/under. Lower &amp; steadier is better.
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Inventory level by week — value chart, hidden for STAFF */}
       {canSeeValue && (
       <Card>
         <CardHeader className="flex-row items-center justify-between">
-          <CardTitle>Inventory health by week</CardTitle>
+          <CardTitle>Inventory level by week</CardTitle>
           <span className="text-xs text-gray-500">
             Upload stock each Monday
           </span>
@@ -341,6 +439,44 @@ function Kpi({
         {value}
       </div>
       {sub && <div className="text-xs text-gray-400 mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+
+function ActionList({
+  title,
+  tone,
+  hint,
+  rows,
+  empty,
+}: {
+  title: string;
+  tone: "bad" | "warn";
+  hint: string;
+  rows: { sku: string; right: string }[];
+  empty: string;
+}) {
+  const dot = tone === "bad" ? "bg-red-500" : "bg-amber-500";
+  const edge = tone === "bad" ? "border-l-red-400" : "border-l-amber-400";
+  return (
+    <div className={"rounded-lg border border-gray-200 border-l-4 p-3 " + edge}>
+      <div className="flex items-center gap-1.5">
+        <span className={"h-2 w-2 rounded-full " + dot} />
+        <div className="text-sm font-medium text-gray-800">{title}</div>
+      </div>
+      <div className="text-[11px] text-gray-400 mb-2 ml-3.5">{hint}</div>
+      {rows.length === 0 ? (
+        <p className="text-xs text-gray-400 py-1">{empty}</p>
+      ) : (
+        <ul className="divide-y divide-gray-100 max-h-64 overflow-y-auto">
+          {rows.map((r) => (
+            <li key={r.sku} className="flex items-center justify-between py-1.5 text-sm gap-3">
+              <span className="text-gray-700 font-mono text-xs truncate">{r.sku}</span>
+              <span className="text-gray-500 tabular-nums text-xs whitespace-nowrap">{r.right}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
