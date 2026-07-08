@@ -135,26 +135,31 @@ export async function importStock(formData: FormData): Promise<ImportStockResult
   const supabase = await createClient();
 
   // ---- Build SKU resolution map ----
-  // direct products.sku -> productId
-  // sku_mappings.variant_sku -> main_product_id (does not override a direct
-  // product match). Quantity is taken as-is at whatever level the file
-  // reports (weekly stock counts are typically already at main-product level).
-  const resolveMap = new Map<string, string>();
+  // direct products.sku -> { productId, factor:1 }
+  // sku_mappings.variant_sku -> { main_product_id, factor:units_per_variant } (does not
+  // override a direct product match). factor = main-equivalent units per 1 of the file's
+  // SKU and MAY be fractional (e.g. a single 70g piece = 1/6 of a 70g×6 main pack, or a
+  // 500g piece = 1/16 of a 500g×16 pack). Quantities are multiplied by the factor so stock
+  // is counted in the SAME main-SKU units as sales (mirrors the sales importer).
+  const resolveMap = new Map<string, { productId: string; factor: number }>();
 
   const { data: products, error: prodErr } = await supabase.from("products").select("id, sku");
   if (prodErr) return { ok: false, error: `Could not load products: ${prodErr.message}` };
   for (const p of products ?? []) {
-    resolveMap.set(String(p.sku).trim().toUpperCase(), p.id);
+    resolveMap.set(String(p.sku).trim().toUpperCase(), { productId: p.id, factor: 1 });
   }
 
   const { data: mappings, error: mapErr } = await supabase
     .from("sku_mappings")
-    .select("variant_sku, main_product_id");
+    .select("variant_sku, main_product_id, units_per_variant");
   if (mapErr) return { ok: false, error: `Could not load SKU mappings: ${mapErr.message}` };
   for (const m of mappings ?? []) {
     const key = String(m.variant_sku).trim().toUpperCase();
     if (!resolveMap.has(key)) {
-      resolveMap.set(key, m.main_product_id);
+      resolveMap.set(key, {
+        productId: m.main_product_id,
+        factor: Number(m.units_per_variant) || 1,
+      });
     }
   }
 
@@ -168,14 +173,15 @@ export async function importStock(formData: FormData): Promise<ImportStockResult
     const upper = row.sku.toUpperCase();
     // Direct match, else retry without a trailing "-UV" warehouse suffix
     // (the inventory export writes e.g. BC-CATLITTER-COFFEE-6L-UV for BC-CATLITTER-COFFEE-6L).
-    const productId = resolveMap.get(upper) ?? resolveMap.get(upper.replace(/-UV$/, ""));
-    if (!productId) {
+    const hit = resolveMap.get(upper) ?? resolveMap.get(upper.replace(/-UV$/, ""));
+    if (!hit) {
       unknownAgg.set(row.sku, (unknownAgg.get(row.sku) || 0) + row.qty);
       continue;
     }
     const snapshotDate = row.date || snapshotDateInput;
-    const key = `${productId}|${snapshotDate}`;
-    qtyByProduct.set(key, (qtyByProduct.get(key) || 0) + row.qty);
+    const key = `${hit.productId}|${snapshotDate}`;
+    // Convert to main-SKU-equivalent units (factor may be fractional).
+    qtyByProduct.set(key, (qtyByProduct.get(key) || 0) + row.qty * hit.factor);
   }
 
   // ---- Idempotent per-day write: clear existing WEEKLY_UPLOAD snapshots for
