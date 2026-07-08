@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-06-22)
 Phase: 1 (Foundation & Roles) — DEPLOYED to production
 Plan: 3 of 3 complete (migrations applied + verified; app deployed; /login HTTP 200)
 Status: Phase 1 shipped to prod (supplychain.jjangx3.com). Final UAT pending — log in as ADMIN, confirm role gating + Admin invite/role-change. Ready to start Phase 2.
-Last activity: 2026-06-23 — Migrations 0011/0012 applied to prod via Management API; 3 Vercel env vars set; pushed main → prod deploy READY; /login verified 200
+Last activity: 2026-07-08 — Completed quick task 260708-f3z: SKU codes manager (variant→main mapping with conversion factor)
 
 Progress: [██████████] 100% (Phase 1 plans; UAT pending)
 
@@ -95,6 +95,7 @@ Recent decisions affecting current work:
 | Date | Slug | Summary |
 |------|------|---------|
 | 2026-07-01 | sales-trend-tab | Added /sales/trend: product x month x channel pivot table (range→variation grouping, Total/Online/Offline toggle). Commit ab17f04. |
+| 2026-07-08 | sku-codes-manager | Added /products/sku-codes: SCM/ADMIN UI to map alternate SKU codes → main product with fractional conversion factor (sku_mappings). Add/edit/delete + ratio input, "Manage SKU codes" link on /products. Commit 419ade1. |
 
 ## Session Continuity
 
