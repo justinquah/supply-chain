@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MonthSelector } from "@/components/month-selector";
 import { SalesUploadForm } from "./sales-upload-form";
 import { ManualSalesForm } from "./manual-sales-form";
+import { SalesManager } from "./sales-manager";
 import { getManualSalesProducts } from "./actions";
 
 const MONTHS = [
@@ -111,6 +112,21 @@ export default async function SalesPage({
           initialYear={manualYear}
           initialMonth={manualMonth}
         />
+      )}
+
+      {canUpload && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Manage / delete sales data</CardTitle>
+            <p className="text-xs text-gray-500 mt-1">
+              Tick a month&apos;s Online/Offline sold units and delete them (e.g. a
+              wrongly-uploaded month), then re-upload.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <SalesManager periods={periodList} />
+          </CardContent>
+        </Card>
       )}
 
       {/* Monthly totals */}

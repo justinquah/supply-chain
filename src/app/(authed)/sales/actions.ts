@@ -403,3 +403,50 @@ export async function saveManualSales(
 
   return { ok: true, saved };
 }
+
+/**
+ * Bulk-delete uploaded sales batches. Each batch is a (year, month, channel) group —
+ * e.g. removing a wrongly-uploaded month. Gated to SCM/ADMIN; writes via the admin
+ * (service-role) client since monthly_sales write RLS is SCM-only.
+ */
+export async function deleteSalesBatches(
+  batches: { year: number; month: number; channel: "ONLINE" | "OFFLINE" }[]
+): Promise<{ ok: boolean; deleted: number; error?: string }> {
+  const profile = await getCurrentUser();
+  if (!profile) return { ok: false, deleted: 0, error: "Not signed in" };
+  if (!(["SCM", "ADMIN"] as string[]).includes(profile.role)) {
+    return { ok: false, deleted: 0, error: "You don't have permission to delete sales" };
+  }
+
+  const clean = (batches ?? []).filter(
+    (b) =>
+      Number.isInteger(b.year) &&
+      Number.isInteger(b.month) &&
+      (b.channel === "ONLINE" || b.channel === "OFFLINE")
+  );
+  if (clean.length === 0) return { ok: true, deleted: 0 };
+
+  const admin = createAdminClient();
+  let deleted = 0;
+  for (const b of clean) {
+    const { count, error } = await admin
+      .from("monthly_sales")
+      .delete({ count: "exact" })
+      .eq("year", b.year)
+      .eq("month", b.month)
+      .eq("channel", b.channel);
+    if (error) return { ok: false, deleted, error: error.message };
+    deleted += count ?? 0;
+    // Best-effort clear of the upload-log entry for this batch.
+    await admin
+      .from("sales_uploads")
+      .delete()
+      .eq("year", b.year)
+      .eq("month", b.month)
+      .eq("channel", b.channel);
+  }
+
+  revalidatePath("/sales");
+  revalidatePath("/dashboard");
+  return { ok: true, deleted };
+}
