@@ -61,7 +61,23 @@ export default async function PurchaseOrdersPage() {
             Received → Shipped → Received
           </p>
         </div>
-        {canDraft && <PoForm suppliers={supplierOpts} groups={groupNames} />}
+        {canDraft && (
+          <div className="flex items-center gap-2">
+            <Link
+              href="/purchase-orders/import"
+              className="inline-flex items-center rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              Import POs
+            </Link>
+            <Link
+              href="/purchase-orders/import-docs"
+              className="inline-flex items-center rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              Import documents
+            </Link>
+            <PoForm suppliers={supplierOpts} groups={groupNames} />
+          </div>
+        )}
       </div>
 
       <Card>
