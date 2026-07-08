@@ -65,6 +65,14 @@ export default async function ProductsPage({
           </p>
         </div>
         <div className="flex gap-2 text-sm">
+          {canManage && (
+            <a
+              href="/products/sku-codes"
+              className="px-3 py-1.5 rounded-md border border-gray-200 text-gray-700 hover:bg-gray-50"
+            >
+              Manage SKU codes
+            </a>
+          )}
           <a
             href="/products"
             className={
