@@ -6,12 +6,96 @@ import { Button } from "@/components/ui/button";
 
 type Option = { id: string; label: string };
 
+type ProductLine = { key: number; productId: string; quantity: string; eta: string };
+
+let lineKeySeq = 0;
+function newLine(): ProductLine {
+  return { key: ++lineKeySeq, productId: "", quantity: "", eta: "" };
+}
+
+// Repeatable product + quantity (+ optional per-line ETA) rows. Serialized as
+// parallel line_product_id[] / line_quantity[] / line_eta[] fields (parsed by
+// parseProductLines in actions.ts). Any products from any range may be added —
+// a single PO can carry lines across multiple ranges.
+function ProductLines({ products }: { products: Option[] }) {
+  const [lines, setLines] = useState<ProductLine[]>([newLine(), newLine()]);
+
+  function update(key: number, patch: Partial<ProductLine>) {
+    setLines((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)));
+  }
+  function remove(key: number) {
+    setLines((prev) => (prev.length > 1 ? prev.filter((l) => l.key !== key) : prev));
+  }
+  function add() {
+    setLines((prev) => [...prev, newLine()]);
+  }
+
+  return (
+    <div className="space-y-2">
+      <span className="text-xs text-gray-500 block">
+        Product lines (product + quantity being ordered — optional; drives the
+        dashboard&rsquo;s Incoming / in-transit)
+      </span>
+      <div className="space-y-2">
+        {lines.map((line) => (
+          <div key={line.key} className="flex items-center gap-2">
+            <select
+              name="line_product_id"
+              value={line.productId}
+              onChange={(e) => update(line.key, { productId: e.target.value })}
+              className={inputCls}
+            >
+              <option value="">— select product —</option>
+              {products.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+            <input
+              name="line_quantity"
+              type="number"
+              min="1"
+              value={line.quantity}
+              onChange={(e) => update(line.key, { quantity: e.target.value })}
+              className={inputCls + " w-24 shrink-0"}
+              placeholder="qty"
+            />
+            <input
+              name="line_eta"
+              type="date"
+              value={line.eta}
+              onChange={(e) => update(line.key, { eta: e.target.value })}
+              className={inputCls + " w-40 shrink-0"}
+              title="defaults to PO ETA"
+              placeholder="defaults to PO ETA"
+            />
+            <button
+              type="button"
+              onClick={() => remove(line.key)}
+              disabled={lines.length === 1}
+              className="text-xs text-gray-400 hover:text-red-600 disabled:opacity-30 disabled:hover:text-gray-400 shrink-0"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+      <button type="button" onClick={add} className="text-xs text-brand hover:underline">
+        + Add line
+      </button>
+    </div>
+  );
+}
+
 export function PoForm({
   suppliers,
   groups,
+  products,
 }: {
   suppliers: Option[];
   groups: string[];
+  products: Option[];
 }) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -126,6 +210,8 @@ export function PoForm({
         <Field label="Notes">
           <input name="notes" className={inputCls} placeholder="optional" />
         </Field>
+
+        <ProductLines products={products} />
 
         <div className="flex items-center gap-3">
           <Button type="submit" disabled={saving}>

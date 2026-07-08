@@ -26,23 +26,30 @@ export default async function PurchaseOrdersPage() {
   const role = profile?.role ?? "";
   const canDraft = PO_DRAFT_CREATORS.includes(role as never);
 
-  const [{ data: pos }, { data: suppliers }, { data: groups }] = await Promise.all([
-    supabase
-      .from("purchase_orders")
-      .select(
-        "id, po_number, status, invoice_number, invoice_amount, expected_invoice_amount, invoice_currency, product_group, created_at, supplier:profiles!supplier_id(name, company_name), po_documents(id, doc_type, file_path, file_name)"
-      )
-      .order("created_at", { ascending: false }),
-    // Phase-1 substitute: the SUPPLIER role was removed in migration 0011 (all SUPPLIER
-    // rows remapped to ADMIN). Populate the supplier dropdown with any profile that has
-    // a company_name — these are the actual supplier contacts in the system.
-    supabase
-      .from("profiles")
-      .select("id, name, company_name")
-      .not("company_name", "is", null)
-      .order("company_name"),
-    supabase.from("product_groups").select("name").order("name"),
-  ]);
+  const [{ data: pos }, { data: suppliers }, { data: groups }, { data: products }] =
+    await Promise.all([
+      supabase
+        .from("purchase_orders")
+        .select(
+          "id, po_number, status, invoice_number, invoice_amount, expected_invoice_amount, invoice_currency, product_group, created_at, supplier:profiles!supplier_id(name, company_name), po_documents(id, doc_type, file_path, file_name)"
+        )
+        .order("created_at", { ascending: false }),
+      // Phase-1 substitute: the SUPPLIER role was removed in migration 0011 (all SUPPLIER
+      // rows remapped to ADMIN). Populate the supplier dropdown with any profile that has
+      // a company_name — these are the actual supplier contacts in the system.
+      supabase
+        .from("profiles")
+        .select("id, name, company_name")
+        .not("company_name", "is", null)
+        .order("company_name"),
+      supabase.from("product_groups").select("name").order("name"),
+      // Active products for the PO create form's product-lines picker.
+      supabase
+        .from("products")
+        .select("id, sku, name, product_family")
+        .eq("is_active", true)
+        .order("sku"),
+    ]);
 
   const rows = pos ?? [];
   const supplierOpts = (suppliers ?? []).map((s: any) => ({
@@ -50,6 +57,10 @@ export default async function PurchaseOrdersPage() {
     label: s.company_name || s.name,
   }));
   const groupNames = (groups ?? []).map((g: any) => g.name);
+  const productOpts = (products ?? []).map((p: any) => ({
+    id: p.id,
+    label: `${p.sku} — ${p.name}`,
+  }));
 
   return (
     <div className="space-y-6">
@@ -75,7 +86,13 @@ export default async function PurchaseOrdersPage() {
             >
               Import documents
             </Link>
-            <PoForm suppliers={supplierOpts} groups={groupNames} />
+            <Link
+              href="/purchase-orders/import-lines"
+              className="inline-flex items-center rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              Import PO lines
+            </Link>
+            <PoForm suppliers={supplierOpts} groups={groupNames} products={productOpts} />
           </div>
         )}
       </div>

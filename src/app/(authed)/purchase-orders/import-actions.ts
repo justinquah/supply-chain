@@ -468,3 +468,291 @@ export async function importPoDocuments(
   revalidatePath("/purchase-orders");
   return { ok: true, uploaded, failed };
 }
+
+// ---------------------------------------------------------------------------
+// FEATURE C — Bulk PO product-lines import (backfill in-transit incoming_stock)
+// ---------------------------------------------------------------------------
+
+export type ImportPoLinesResult = {
+  ok: boolean;
+  error?: string;
+  posCreated?: number;
+  posAttached?: number;
+  linesCreated?: number;
+  skipped?: { row: number; po_number: string; reason: string }[];
+};
+
+// Header aliases for the lines importer. po_number + supplier reuse the PO-import
+// aliases so column detection is consistent across both importers.
+const LINE_HEADER_ALIASES: Record<string, string[]> = {
+  po_number: HEADER_ALIASES.po_number,
+  supplier: HEADER_ALIASES.supplier,
+  sku: ["sku", "product_sku", "product sku", "variant_sku", "variant sku", "item_code", "item code", "code", "product_code", "product code"],
+  quantity: ["quantity", "qty", "units", "quantity_ordered", "quantity ordered"],
+  eta: ["eta", "expected_date", "expected date", "expected", "arrival", "arrival_date", "arrival date"],
+};
+const LINE_FIELD_KEYS = Object.keys(LINE_HEADER_ALIASES);
+
+// Locate the header row (scan first 8 rows). A row qualifies when it carries
+// BOTH a po_number and an sku column.
+function detectLineHeader(rows: unknown[][]): { headerIdx: number; cols: ColMap } | null {
+  const norm = (v: unknown) => String(v == null ? "" : v).trim().toLowerCase().replace(/\s+/g, " ");
+  for (let i = 0; i < Math.min(rows.length, 8); i++) {
+    const row = (rows[i] ?? []).map(norm);
+    const poCol = row.findIndex((c) => LINE_HEADER_ALIASES.po_number.includes(c));
+    const skuCol = row.findIndex((c) => LINE_HEADER_ALIASES.sku.includes(c));
+    if (poCol < 0 || skuCol < 0) continue;
+    const cols: ColMap = {};
+    for (const field of LINE_FIELD_KEYS) {
+      const idx = row.findIndex((c) => LINE_HEADER_ALIASES[field].includes(c));
+      if (idx >= 0) cols[field] = idx;
+    }
+    return { headerIdx: i, cols };
+  }
+  return null;
+}
+
+export async function importPoLines(formData: FormData): Promise<ImportPoLinesResult> {
+  const profile = await getCurrentUser();
+  if (!profile) return { ok: false, error: "Not signed in" };
+  if (!(["SCM", "ADMIN"] as string[]).includes(profile.role)) {
+    return { ok: false, error: "You don't have permission to import PO lines" };
+  }
+
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) {
+    return { ok: false, error: "No file uploaded" };
+  }
+
+  let wb: XLSX.WorkBook;
+  try {
+    const buffer = await file.arrayBuffer();
+    wb = XLSX.read(buffer, { type: "array", cellDates: true });
+  } catch {
+    return { ok: false, error: "Could not read the uploaded file. Is it a valid .xlsx/.xls/.csv?" };
+  }
+
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null });
+  const detected = detectLineHeader(rows);
+  if (!detected) {
+    return {
+      ok: false,
+      error:
+        'Could not find a header row with recognised "po_number" and "sku" columns. ' +
+        "Start from the template (po_number, supplier, sku, quantity, eta).",
+    };
+  }
+  const { headerIdx, cols } = detected;
+
+  const admin = createAdminClient();
+
+  // ---- SKU resolution map (mirrors the sales importer) ----
+  // products.sku -> {productId, factor:1}; sku_mappings.variant_sku ->
+  // {main_product_id, factor:units_per_variant} (does not override a direct match).
+  const resolveMap = new Map<string, { productId: string; factor: number }>();
+  const { data: products, error: prodErr } = await admin.from("products").select("id, sku");
+  if (prodErr) return { ok: false, error: `Could not load products: ${prodErr.message}` };
+  for (const p of products ?? []) {
+    resolveMap.set(String(p.sku).trim().toUpperCase(), { productId: p.id, factor: 1 });
+  }
+  const { data: mappings, error: mapErr } = await admin
+    .from("sku_mappings")
+    .select("variant_sku, main_product_id, units_per_variant");
+  if (mapErr) return { ok: false, error: `Could not load SKU mappings: ${mapErr.message}` };
+  for (const m of mappings ?? []) {
+    const key = String(m.variant_sku).trim().toUpperCase();
+    if (!resolveMap.has(key)) {
+      resolveMap.set(key, { productId: m.main_product_id, factor: Number(m.units_per_variant) });
+    }
+  }
+
+  // ---- Supplier resolution map (mirrors importPurchaseOrders) — only needed to
+  // CREATE new POs; existing POs keep their own supplier. ----
+  const { data: supplierRows, error: supErr } = await admin
+    .from("profiles")
+    .select("id, name, company_name")
+    .not("company_name", "is", null);
+  if (supErr) return { ok: false, error: `Could not load suppliers: ${supErr.message}` };
+  const supplierByKey = new Map<string, string[]>();
+  const addSupplierKey = (key: string, id: string) => {
+    const k = key.trim().toLowerCase();
+    if (!k) return;
+    const arr = supplierByKey.get(k) ?? [];
+    if (!arr.includes(id)) arr.push(id);
+    supplierByKey.set(k, arr);
+  };
+  for (const s of supplierRows ?? []) {
+    if (s.company_name) addSupplierKey(String(s.company_name), s.id);
+    if (s.name) addSupplierKey(String(s.name), s.id);
+  }
+
+  // ---- Existing POs by po_number (uppercased) → {id, targeted_eta} ----
+  const { data: existingPos, error: poErr } = await admin
+    .from("purchase_orders")
+    .select("id, po_number, targeted_eta");
+  if (poErr) return { ok: false, error: `Could not load purchase orders: ${poErr.message}` };
+  const existingByNumber = new Map<string, { id: string; targeted_eta: string | null }>();
+  for (const p of existingPos ?? []) {
+    if (p.po_number)
+      existingByNumber.set(String(p.po_number).trim().toUpperCase(), {
+        id: p.id,
+        targeted_eta: (p.targeted_eta as string | null) ?? null,
+      });
+  }
+
+  const skipped: { row: number; po_number: string; reason: string }[] = [];
+
+  // ---- Validate + group rows by po_number ----
+  type LineEntry = { productId: string; qty: number; eta: string | null };
+  type Group = { po_number: string; supplierRaw: string; firstRow: number; lines: LineEntry[] };
+  const groups = new Map<string, Group>();
+
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!Array.isArray(row)) continue;
+    const excelRow = i + 1;
+
+    const poNumber = cell(row, cols, "po_number");
+    const sku = cell(row, cols, "sku");
+    const hasAnyData = row.some((c) => c != null && String(c).trim() !== "");
+
+    if (!poNumber) {
+      if (hasAnyData) skipped.push({ row: excelRow, po_number: "", reason: "po_number is blank" });
+      continue;
+    }
+    if (!sku) {
+      skipped.push({ row: excelRow, po_number: poNumber, reason: "sku is blank" });
+      continue;
+    }
+
+    const hit = resolveMap.get(sku.trim().toUpperCase());
+    if (!hit) {
+      skipped.push({ row: excelRow, po_number: poNumber, reason: `sku not found: ${sku}` });
+      continue;
+    }
+
+    const qtyRaw = parseNumber(row, cols, "quantity");
+    if (qtyRaw == null || !Number.isFinite(qtyRaw) || qtyRaw <= 0) {
+      skipped.push({ row: excelRow, po_number: poNumber, reason: "quantity invalid" });
+      continue;
+    }
+
+    const eta = parseDate(row, cols, "eta");
+    const mainQty = Math.round(qtyRaw * hit.factor);
+    if (mainQty <= 0) {
+      skipped.push({ row: excelRow, po_number: poNumber, reason: "quantity resolves to zero units" });
+      continue;
+    }
+
+    const key = poNumber.trim().toUpperCase();
+    const supplierRaw = cell(row, cols, "supplier");
+    let group = groups.get(key);
+    if (!group) {
+      group = { po_number: poNumber, supplierRaw, firstRow: excelRow, lines: [] };
+      groups.set(key, group);
+    } else if (!group.supplierRaw && supplierRaw) {
+      group.supplierRaw = supplierRaw; // first non-blank supplier wins
+    }
+    group.lines.push({ productId: hit.productId, qty: mainQty, eta });
+  }
+
+  // ---- Materialise each group → incoming_stock (delete-then-insert per PO) ----
+  let posCreated = 0;
+  let posAttached = 0;
+  let linesCreated = 0;
+
+  for (const [key, group] of groups) {
+    let poId: string;
+    let poTargetedEta: string | null;
+
+    const existing = existingByNumber.get(key);
+    if (existing) {
+      poId = existing.id;
+      poTargetedEta = existing.targeted_eta;
+      posAttached++;
+    } else {
+      // New PO — a supplier is mandatory (supplier_id is NOT NULL).
+      const supplierRaw = group.supplierRaw.trim();
+      if (!supplierRaw) {
+        skipped.push({
+          row: group.firstRow,
+          po_number: group.po_number,
+          reason: "PO not found — provide a supplier to create it (or import the PO header first)",
+        });
+        continue;
+      }
+      const matches = supplierByKey.get(supplierRaw.toLowerCase());
+      if (!matches || matches.length === 0) {
+        skipped.push({
+          row: group.firstRow,
+          po_number: group.po_number,
+          reason: "PO not found — provide a supplier to create it (or import the PO header first)",
+        });
+        continue;
+      }
+      if (matches.length > 1) {
+        skipped.push({
+          row: group.firstRow,
+          po_number: group.po_number,
+          reason: `supplier not unique: ${supplierRaw}`,
+        });
+        continue;
+      }
+
+      // targeted_eta = earliest ETA among the group's lines (ISO strings sort lexically).
+      const etas = group.lines.map((l) => l.eta).filter((e): e is string => !!e).sort();
+      const minEta = etas.length > 0 ? etas[0] : null;
+
+      const { data: inserted, error: insPoErr } = await admin
+        .from("purchase_orders")
+        .insert({
+          po_number: group.po_number,
+          supplier_id: matches[0],
+          status: "SHIPPED",
+          targeted_eta: minEta,
+          total_amount: 0,
+          proposal_source: "MANUAL_SCM",
+          proposed_by: profile.id,
+        })
+        .select("id, targeted_eta")
+        .single();
+      if (insPoErr) {
+        skipped.push({ row: group.firstRow, po_number: group.po_number, reason: insPoErr.message });
+        continue;
+      }
+      poId = inserted.id;
+      poTargetedEta = (inserted.targeted_eta as string | null) ?? minEta;
+      posCreated++;
+      // Register so later duplicate groups (shouldn't happen — keyed) still route.
+      existingByNumber.set(key, { id: poId, targeted_eta: poTargetedEta });
+    }
+
+    // Idempotent: clear any previously captured lines for this PO first.
+    const { error: delErr } = await admin.from("incoming_stock").delete().eq("po_id", poId);
+    if (delErr) {
+      skipped.push({ row: group.firstRow, po_number: group.po_number, reason: `reset failed: ${delErr.message}` });
+      continue;
+    }
+
+    const inserts = group.lines.map((line) => ({
+      po_id: poId,
+      product_id: line.productId,
+      quantity: line.qty,
+      expected_date: line.eta || poTargetedEta || null,
+      status: "EXPECTED",
+      created_by: profile.id,
+      notes: "bulk PO lines import",
+    }));
+    const { error: insErr } = await admin.from("incoming_stock").insert(inserts);
+    if (insErr) {
+      skipped.push({ row: group.firstRow, po_number: group.po_number, reason: `lines insert failed: ${insErr.message}` });
+      continue;
+    }
+    linesCreated += inserts.length;
+  }
+
+  revalidatePath("/purchase-orders");
+  revalidatePath("/dashboard");
+  return { ok: true, posCreated, posAttached, linesCreated, skipped };
+}

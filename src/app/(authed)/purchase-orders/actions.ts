@@ -86,6 +86,30 @@ function parseShippingLines(formData: FormData): { productId: string; quantity: 
   return lines;
 }
 
+// Parse the repeatable "Product lines" rows submitted by the PO create form
+// (line_product_id[] + line_quantity[] + line_eta[]). Mirrors parseShippingLines
+// but carries an optional per-line ETA. Rows with no product or a non-positive
+// quantity are dropped silently — product lines are optional (SPEC: zero lines
+// must not block PO creation).
+function parseProductLines(
+  formData: FormData
+): { productId: string; quantity: number; eta: string | null }[] {
+  const productIds = formData.getAll("line_product_id").map((v) => String(v).trim());
+  const quantities = formData.getAll("line_quantity").map((v) => Number(v));
+  const etas = formData.getAll("line_eta").map((v) => String(v).trim());
+  const lines: { productId: string; quantity: number; eta: string | null }[] = [];
+  for (let i = 0; i < productIds.length; i++) {
+    const productId = productIds[i];
+    const quantity = quantities[i];
+    if (!productId) continue;
+    if (!Number.isFinite(quantity) || quantity <= 0) continue;
+    const rawEta = etas[i] ?? "";
+    const eta = /^\d{4}-\d{2}-\d{2}$/.test(rawEta) ? rawEta : null;
+    lines.push({ productId, quantity: Math.round(quantity), eta });
+  }
+  return lines;
+}
+
 // Parse the per-line receiving rows submitted by the receiving form. Each row
 // is keyed by its incoming_stock id (recv_line_id[]) with parallel
 // recv_received[] / recv_damaged[] / recv_short[] / recv_extra[] fields. A blank
@@ -192,6 +216,7 @@ export async function savePurchaseOrder(formData: FormData): Promise<ActionResul
     notes,
   };
 
+  let poId: string;
   if (editingId) {
     // Editing an existing draft — only allowed while still DRAFT.
     const status = await getPoStatus(supabase, editingId);
@@ -202,17 +227,51 @@ export async function savePurchaseOrder(formData: FormData): Promise<ActionResul
       .update(fields)
       .eq("id", editingId);
     if (error) return { ok: false, error: error.message };
+    poId = editingId;
   } else {
-    const { error } = await supabase.from("purchase_orders").insert({
-      ...fields,
-      status: "DRAFT" as const,
-      proposal_source: "MANUAL_SCM" as const,
-      proposed_by: profile.id,
-    });
+    const { data: inserted, error } = await supabase
+      .from("purchase_orders")
+      .insert({
+        ...fields,
+        status: "DRAFT" as const,
+        proposal_source: "MANUAL_SCM" as const,
+        proposed_by: profile.id,
+      })
+      .select("id")
+      .single();
     if (error) return { ok: false, error: error.message };
+    poId = inserted.id;
+  }
+
+  // Product lines → incoming_stock (dashboard's "Incoming / in-transit" reads
+  // this table). incoming_stock write RLS is SCM/ADMIN — PO_DRAFT_CREATORS is
+  // SCM/ADMIN (gated above), but we route through the service-role client to
+  // mirror markShipped's idempotent delete-then-insert pattern. Lines are
+  // OPTIONAL: zero valid lines simply clears any previously captured lines and
+  // never blocks the save.
+  const targetedEta = String(formData.get("targeted_eta") || "").trim() || null;
+  const lines = parseProductLines(formData);
+  const admin = createAdminClient();
+  const { error: delErr } = await admin.from("incoming_stock").delete().eq("po_id", poId);
+  if (delErr) return { ok: false, error: `Failed to reset product lines: ${delErr.message}` };
+  if (lines.length > 0) {
+    const { error: insErr } = await admin.from("incoming_stock").insert(
+      lines.map((line) => ({
+        po_id: poId,
+        product_id: line.productId,
+        quantity: line.quantity,
+        expected_date: line.eta || targetedEta || null,
+        status: "EXPECTED",
+        created_by: profile.id,
+        notes: poNumber ? `PO ${poNumber}` : "PO",
+      }))
+    );
+    if (insErr) return { ok: false, error: `Failed to record product lines: ${insErr.message}` };
   }
 
   revalidatePath("/purchase-orders");
+  revalidatePath(`/purchase-orders/${poId}`);
+  revalidatePath("/dashboard");
   return { ok: true };
 }
 
