@@ -8,8 +8,9 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // Run on everything except Next.js internals and static files
+  // Run on everything except Next.js internals and static files (images + the
+  // downloadable spreadsheet templates in /public, which must not be auth-gated).
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|xlsx|xls|csv)$).*)",
   ],
 };
