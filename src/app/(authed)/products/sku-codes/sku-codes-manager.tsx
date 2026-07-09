@@ -106,34 +106,15 @@ export function SkuCodesManager({
             const mainSku = main?.sku || fallbackMain?.sku || "(unknown product)";
             const mainName = main?.name || fallbackMain?.name || "";
             return (
-              <Card key={mainId}>
-                <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/60 rounded-t-lg">
-                  <div className="font-semibold text-gray-900">{mainSku}</div>
-                  <div className="text-xs text-gray-500">{mainName || "—"}</div>
-                </div>
-                <CardContent className="p-0">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-left text-gray-500 border-b border-gray-100">
-                        <th className="py-2 pl-4 pr-3 font-medium">SKU code</th>
-                        <th className="py-2 px-3 font-medium text-right">Factor</th>
-                        <th className="py-2 px-3 font-medium">Ratio</th>
-                        <th className="py-2 pr-4 pl-3 font-medium text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {group.rows.map((m) => (
-                        <SkuCodeRow
-                          key={m.id}
-                          mapping={m}
-                          products={products}
-                          onChanged={() => router.refresh()}
-                        />
-                      ))}
-                    </tbody>
-                  </table>
-                </CardContent>
-              </Card>
+              <MainProductCard
+                key={mainId}
+                mainId={mainId}
+                mainSku={mainSku}
+                mainName={mainName}
+                rows={group.rows}
+                products={products}
+                onChanged={() => router.refresh()}
+              />
             );
           })}
         </div>
@@ -143,6 +124,212 @@ export function SkuCodesManager({
 }
 
 const inputClass = "border border-gray-300 rounded-md px-2 py-1.5 bg-white";
+
+// One main-product group card: its codes table plus an inline "+ Add code" form
+// already scoped to this card's main product (no main-product dropdown needed).
+function MainProductCard({
+  mainId,
+  mainSku,
+  mainName,
+  rows,
+  products,
+  onChanged,
+}: {
+  mainId: string;
+  mainSku: string;
+  mainName: string;
+  rows: Mapping[];
+  products: Product[];
+  onChanged: () => void;
+}) {
+  const [adding, setAdding] = useState(false);
+
+  return (
+    <Card>
+      <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/60 rounded-t-lg flex items-start justify-between gap-2">
+        <div>
+          <div className="font-semibold text-gray-900">{mainSku}</div>
+          <div className="text-xs text-gray-500">{mainName || "—"}</div>
+        </div>
+        {!adding && (
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            className="text-xs text-blue-600 hover:underline shrink-0"
+          >
+            + Add code
+          </button>
+        )}
+      </div>
+      {adding && (
+        <InlineAddCodeForm
+          mainProductId={mainId}
+          onSaved={() => {
+            setAdding(false);
+            onChanged();
+          }}
+          onCancel={() => setAdding(false)}
+        />
+      )}
+      <CardContent className="p-0">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-gray-500 border-b border-gray-100">
+              <th className="py-2 pl-4 pr-3 font-medium">SKU code</th>
+              <th className="py-2 px-3 font-medium text-right">Factor</th>
+              <th className="py-2 px-3 font-medium">Ratio</th>
+              <th className="py-2 pr-4 pl-3 font-medium text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((m) => (
+              <SkuCodeRow
+                key={m.id}
+                mapping={m}
+                products={products}
+                onChanged={onChanged}
+              />
+            ))}
+          </tbody>
+        </table>
+      </CardContent>
+    </Card>
+  );
+}
+
+// Compact add form scoped to a single main product (used inside each card).
+function InlineAddCodeForm({
+  mainProductId,
+  onSaved,
+  onCancel,
+}: {
+  mainProductId: string;
+  onSaved: () => void;
+  onCancel: () => void;
+}) {
+  const [variantSku, setVariantSku] = useState("");
+  const [x, setX] = useState("1"); // this many of the code
+  const [y, setY] = useState("1"); // equal this many main units
+  const [variantName, setVariantName] = useState("");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const xNum = Number(x);
+  const yNum = Number(y);
+  const factor =
+    Number.isFinite(xNum) && Number.isFinite(yNum) && xNum > 0 ? yNum / xNum : NaN;
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setMsg(null);
+    const res = await createSkuMapping({
+      variant_sku: variantSku,
+      main_product_id: mainProductId,
+      units_per_variant: factor,
+      variant_name: variantName || null,
+      notes: notes || null,
+    });
+    setSaving(false);
+    if (res.ok) {
+      onSaved();
+    } else {
+      setMsg({ ok: false, text: res.error ?? "Failed to add SKU code" });
+    }
+  }
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="border-b border-gray-100 bg-gray-50/40 px-4 py-3 space-y-3"
+    >
+      <label className="flex flex-col gap-1 text-sm">
+        <span className="text-gray-600">SKU code (from your files) *</span>
+        <input
+          required
+          autoFocus
+          value={variantSku}
+          onChange={(e) => setVariantSku(e.target.value)}
+          placeholder="e.g. CATLITTER-70G"
+          className={inputClass + " uppercase"}
+        />
+      </label>
+
+      <div className="rounded-md border border-gray-200 bg-white p-3">
+        <div className="flex flex-wrap items-center gap-2 text-sm text-gray-700">
+          <input
+            type="number"
+            step="any"
+            min="0"
+            required
+            value={x}
+            onChange={(e) => setX(e.target.value)}
+            className={inputClass + " w-20 tabular-nums"}
+            aria-label="Quantity of this code"
+          />
+          <span>of this code</span>
+          <span className="font-semibold">=</span>
+          <input
+            type="number"
+            step="any"
+            min="0"
+            required
+            value={y}
+            onChange={(e) => setY(e.target.value)}
+            className={inputClass + " w-20 tabular-nums"}
+            aria-label="Equivalent main units"
+          />
+          <span>main unit{yNum === 1 ? "" : "s"}</span>
+          <span className="ml-2 text-gray-500">
+            {Number.isFinite(factor) && factor > 0
+              ? `→ factor ${fmtFactor(factor)}`
+              : "→ enter a valid ratio"}
+          </span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="text-gray-600">Variant name (optional)</span>
+          <input
+            value={variantName}
+            onChange={(e) => setVariantName(e.target.value)}
+            className={inputClass}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="text-gray-600">Notes (optional)</span>
+          <input
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            className={inputClass}
+          />
+        </label>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <Button type="submit" size="sm" disabled={saving}>
+          {saving ? "Adding…" : "Add code"}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={onCancel}
+          disabled={saving}
+        >
+          Cancel
+        </Button>
+        {msg && (
+          <span className={"text-sm " + (msg.ok ? "text-emerald-600" : "text-red-600")}>
+            {msg.text}
+          </span>
+        )}
+      </div>
+    </form>
+  );
+}
 
 function AddSkuCodeForm({
   products,

@@ -12,7 +12,6 @@ const EMPTY = {
   name: "",
   product_family: "",
   variation: "",
-  pack_size: "",
   unit_cost: "",
   cost_currency: "MYR",
   launch_date: "",
@@ -39,7 +38,6 @@ export function AddProductForm() {
       name: form.name,
       product_family: form.product_family,
       variation: form.variation,
-      pack_size: form.pack_size,
       unit_cost: form.unit_cost ? Number(form.unit_cost) : null,
       cost_currency: form.cost_currency,
       launch_date: form.launch_date || null,
@@ -95,14 +93,6 @@ export function AddProductForm() {
               <input
                 value={form.variation}
                 onChange={(e) => set("variation", e.target.value)}
-                className="border border-gray-300 rounded-md px-2 py-1.5 bg-white"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-sm">
-              <span className="text-gray-600">Pack size</span>
-              <input
-                value={form.pack_size}
-                onChange={(e) => set("pack_size", e.target.value)}
                 className="border border-gray-300 rounded-md px-2 py-1.5 bg-white"
               />
             </label>

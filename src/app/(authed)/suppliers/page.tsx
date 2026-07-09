@@ -13,7 +13,7 @@ export default async function SuppliersPage() {
       .from("profiles")
       .select(
         "id, name, company_name, email, supplier_payment_terms, supplier_deposit_percent, " +
-          "product_suppliers(id, product_id, unit_cost, cost_currency, is_primary, " +
+          "product_suppliers(id, product_id, unit_cost, cost_currency, is_primary, order_unit, " +
           "products(id, sku, name, product_family, variation, units_per_carton))"
       )
       .not("company_name", "is", null)

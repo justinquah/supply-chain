@@ -29,7 +29,7 @@ export default async function ProductsPage({
   let query = supabase
     .from("products")
     .select(
-      "id, sku, name, product_family, variation, pack_size, launch_date, is_main, is_active, unit_cost, cost_currency, units_per_carton, stock_pieces_per_unit, product_categories(name), product_suppliers(unit_cost, cost_currency, is_primary, profiles(name, company_name))"
+      "id, sku, name, product_family, variation, launch_date, is_main, is_active, unit_cost, cost_currency, units_per_carton, stock_pieces_per_unit, product_categories(name), product_suppliers(unit_cost, cost_currency, is_primary, profiles(name, company_name))"
     )
     .order("variation", { ascending: true });
   if (!showInactive) query = query.eq("is_active", true);
@@ -136,7 +136,6 @@ export default async function ProductsPage({
                       <th className="py-2 pl-4 pr-3 font-medium">Variation</th>
                       <th className="py-2 px-3 font-medium">Primary supplier</th>
                       <th className="py-2 px-3 font-medium text-right">Cost/unit</th>
-                      <th className="py-2 px-3 font-medium">Pack</th>
                       <th className="py-2 px-3 font-medium text-right">Units / carton</th>
                       <th
                         className="py-2 px-3 font-medium text-right"
@@ -189,9 +188,6 @@ export default async function ProductsPage({
                               primary?.unit_cost ?? p.unit_cost,
                               primary?.cost_currency ?? p.cost_currency
                             )}
-                          </td>
-                          <td className="py-2 px-3 text-gray-500 text-xs">
-                            {p.pack_size || "—"}
                           </td>
                           <td className="py-2 px-3 text-right">
                             {canManage ? (

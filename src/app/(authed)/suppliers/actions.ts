@@ -30,6 +30,38 @@ function revalidateSuppliers() {
 }
 
 type CostBasis = "unit" | "carton";
+type OrderUnit = "unit" | "carton";
+
+function isOrderUnit(v: string): v is OrderUnit {
+  return v === "unit" || v === "carton";
+}
+
+/**
+ * Set how a product is ordered from a supplier — by individual unit or by carton.
+ * Stored on product_suppliers.order_unit (CHECK in ('unit','carton')).
+ * Gated to SCM/ADMIN; writes via the admin (service-role) client.
+ */
+export async function updateOrderUnit(
+  productId: string,
+  supplierId: string,
+  orderUnit: string
+): Promise<ActionResult> {
+  await requireRole("SCM", "ADMIN");
+
+  if (!productId || !supplierId) return { ok: false, error: "Missing product or supplier" };
+  if (!isOrderUnit(orderUnit)) return { ok: false, error: "Order unit must be unit or carton" };
+
+  const adminClient = createAdminClient();
+  const { error } = await adminClient
+    .from("product_suppliers")
+    .update({ order_unit: orderUnit })
+    .eq("product_id", productId)
+    .eq("supplier_id", supplierId);
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/suppliers");
+  return { ok: true };
+}
 
 /**
  * Convert an entered cost to the canonical per-UNIT cost. Costs are always
@@ -106,13 +138,15 @@ export async function assignProduct(
   cost: number,
   currency: string,
   isPrimary: boolean,
-  basis: CostBasis = "unit"
+  basis: CostBasis = "unit",
+  orderUnit: OrderUnit = "unit"
 ): Promise<ActionResult> {
   const profile = await requireRole("SCM", "ADMIN");
 
   if (!supplierId || !productId) return { ok: false, error: "Missing supplier or product" };
   if (Number.isNaN(cost) || cost < 0) return { ok: false, error: "Cost must be a positive number" };
   if (!isCurrency(currency)) return { ok: false, error: "Invalid currency" };
+  if (!isOrderUnit(orderUnit)) return { ok: false, error: "Order unit must be unit or carton" };
 
   const adminClient = createAdminClient();
 
@@ -139,6 +173,7 @@ export async function assignProduct(
       unit_cost: unitCost,
       cost_currency: currency,
       is_primary: isPrimary,
+      order_unit: orderUnit,
     },
     { onConflict: "product_id,supplier_id" }
   );

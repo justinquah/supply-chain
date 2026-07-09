@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { assignProduct, removeProduct, updateSupplierTerms } from "./actions";
+import { assignProduct, removeProduct, updateSupplierTerms, updateOrderUnit } from "./actions";
 import { CostCell } from "./cost-cell";
 
 const CURRENCIES = ["MYR", "USD", "CNY", "THB"] as const;
@@ -23,6 +23,7 @@ type ProductSupplierRow = {
   unit_cost: number;
   cost_currency: string;
   is_primary: boolean;
+  order_unit?: string | null;
   products: Product | null;
 };
 
@@ -85,6 +86,7 @@ export function SupplierCard({
   const [assignCurrency, setAssignCurrency] = useState<string>("MYR");
   const [assignPrimary, setAssignPrimary] = useState(false);
   const [assignBasis, setAssignBasis] = useState<"unit" | "carton">("unit");
+  const [assignOrderUnit, setAssignOrderUnit] = useState<"unit" | "carton">("unit");
   const [assignMsg, setAssignMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const assignedProductIds = new Set(productSuppliers.map((ps) => ps.product_id));
@@ -131,7 +133,8 @@ export function SupplierCard({
         cost,
         assignCurrency,
         assignPrimary,
-        assignBasis
+        assignBasis,
+        assignOrderUnit
       );
       if (res.ok) {
         setAssignMsg({ ok: true, text: "Product assigned" });
@@ -139,6 +142,7 @@ export function SupplierCard({
         setAssignCost("");
         setAssignPrimary(false);
         setAssignBasis("unit");
+        setAssignOrderUnit("unit");
         setShowAssign(false);
       } else {
         setAssignMsg({ ok: false, text: res.error ?? "Failed to assign" });
@@ -323,6 +327,17 @@ export function SupplierCard({
                   ))}
                 </select>
               </div>
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1">Order by</label>
+                <select
+                  value={assignOrderUnit}
+                  onChange={(e) => setAssignOrderUnit(e.target.value as "unit" | "carton")}
+                  className="border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                >
+                  <option value="unit">Unit</option>
+                  <option value="carton">Carton</option>
+                </select>
+              </div>
               <label className="flex items-center gap-1.5 text-xs text-gray-600 pb-1.5">
                 <input
                   type="checkbox"
@@ -377,13 +392,20 @@ export function SupplierCard({
                           )}
                         </td>
                         <td className="py-2 px-2 text-right">
-                          <CostCell
-                            productId={ps.product_id}
-                            supplierId={supplier.id}
-                            unitCost={ps.unit_cost}
-                            costCurrency={ps.cost_currency}
-                            unitsPerCarton={Number(ps.products?.units_per_carton) || 1}
-                          />
+                          <div className="flex flex-col items-end gap-1">
+                            <CostCell
+                              productId={ps.product_id}
+                              supplierId={supplier.id}
+                              unitCost={ps.unit_cost}
+                              costCurrency={ps.cost_currency}
+                              unitsPerCarton={Number(ps.products?.units_per_carton) || 1}
+                            />
+                            <OrderUnitCell
+                              productId={ps.product_id}
+                              supplierId={supplier.id}
+                              orderUnit={ps.order_unit === "carton" ? "carton" : "unit"}
+                            />
+                          </div>
                         </td>
                         <td className="py-2 px-2">
                           <CostTrend history={history} />
@@ -407,6 +429,50 @@ export function SupplierCard({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+// Compact inline "Order: [Unit ▾ / Carton]" control — persists on change.
+function OrderUnitCell({
+  productId,
+  supplierId,
+  orderUnit,
+}: {
+  productId: string;
+  supplierId: string;
+  orderUnit: "unit" | "carton";
+}) {
+  const [value, setValue] = useState<"unit" | "carton">(orderUnit);
+  const [isPending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  function handleChange(next: "unit" | "carton") {
+    const prev = value;
+    setValue(next);
+    setError(null);
+    startTransition(async () => {
+      const res = await updateOrderUnit(productId, supplierId, next);
+      if (!res.ok) {
+        setValue(prev);
+        setError(res.error ?? "Failed to update");
+      }
+    });
+  }
+
+  return (
+    <div className="flex items-center gap-1 text-[10px] text-gray-500">
+      <span>Order:</span>
+      <select
+        value={value}
+        onChange={(e) => handleChange(e.target.value as "unit" | "carton")}
+        disabled={isPending}
+        className="border border-gray-300 rounded-md px-1 py-0.5 text-[10px] focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:opacity-50"
+      >
+        <option value="unit">Unit</option>
+        <option value="carton">Carton</option>
+      </select>
+      {error && <span className="text-red-600">{error}</span>}
+    </div>
   );
 }
 
