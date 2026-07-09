@@ -38,6 +38,66 @@ export async function updateLaunchDate(
   return { ok: true };
 }
 
+/**
+ * Update a product's units-per-carton (the carton↔unit converter) — how many
+ * sellable MAIN units are in one carton. Gated to SCM/ADMIN; writes via the
+ * admin client, same boundary as updateLaunchDate. Stored as an integer.
+ * Revalidates /dashboard too because pack fields feed the ordering/stock math.
+ */
+export async function updateUnitsPerCarton(
+  productId: string,
+  value: number
+): Promise<ActionResult> {
+  await requireRole("SCM", "ADMIN");
+
+  if (!productId) return { ok: false, error: "Missing product" };
+  if (!Number.isFinite(value) || value <= 0) {
+    return { ok: false, error: "Units / carton must be a number greater than 0" };
+  }
+
+  const adminClient = createAdminClient();
+  const { error } = await adminClient
+    .from("products")
+    .update({ units_per_carton: Math.round(value) })
+    .eq("id", productId);
+
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/products");
+  revalidatePath("/dashboard");
+  return { ok: true };
+}
+
+/**
+ * Update a product's stock-pieces-per-unit — how many individual pieces the
+ * STOCK FILE counts per 1 main unit (the ÷ divisor the stock importer applies).
+ * Gated to SCM/ADMIN. May be fractional (NUMERIC column). Revalidates /dashboard
+ * because changing the divisor changes computed on-hand stock.
+ */
+export async function updateStockPiecesPerUnit(
+  productId: string,
+  value: number
+): Promise<ActionResult> {
+  await requireRole("SCM", "ADMIN");
+
+  if (!productId) return { ok: false, error: "Missing product" };
+  if (!Number.isFinite(value) || value <= 0) {
+    return { ok: false, error: "Stock pcs / unit must be a number greater than 0" };
+  }
+
+  const adminClient = createAdminClient();
+  const { error } = await adminClient
+    .from("products")
+    .update({ stock_pieces_per_unit: value })
+    .eq("id", productId);
+
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/products");
+  revalidatePath("/dashboard");
+  return { ok: true };
+}
+
 const CURRENCY_CODES = ["MYR", "USD", "CNY", "THB"] as const;
 type CurrencyCode = (typeof CURRENCY_CODES)[number];
 
@@ -56,6 +116,8 @@ export async function addProduct(input: {
   cost_currency?: string;
   launch_date?: string | null;
   is_active?: boolean;
+  units_per_carton?: number | null;
+  stock_pieces_per_unit?: number | null;
 }): Promise<ActionResult> {
   await requireRole("SCM", "ADMIN");
 
@@ -65,6 +127,18 @@ export async function addProduct(input: {
   if (!name) return { ok: false, error: "Name is required" };
   if (input.launch_date && Number.isNaN(Date.parse(input.launch_date))) {
     return { ok: false, error: "Invalid launch date" };
+  }
+  if (
+    input.units_per_carton != null &&
+    (!Number.isFinite(input.units_per_carton) || input.units_per_carton <= 0)
+  ) {
+    return { ok: false, error: "Units / carton must be a number greater than 0" };
+  }
+  if (
+    input.stock_pieces_per_unit != null &&
+    (!Number.isFinite(input.stock_pieces_per_unit) || input.stock_pieces_per_unit <= 0)
+  ) {
+    return { ok: false, error: "Stock pcs / unit must be a number greater than 0" };
   }
   const currency = CURRENCY_CODES.includes(input.cost_currency as CurrencyCode)
     ? (input.cost_currency as CurrencyCode)
@@ -89,6 +163,8 @@ export async function addProduct(input: {
     cost_currency: currency,
     launch_date: input.launch_date || null,
     is_active: input.is_active ?? true,
+    units_per_carton: input.units_per_carton != null ? Math.round(input.units_per_carton) : 1,
+    stock_pieces_per_unit: input.stock_pieces_per_unit ?? 1,
   });
 
   if (error) {

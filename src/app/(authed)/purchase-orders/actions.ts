@@ -93,11 +93,12 @@ function parseShippingLines(formData: FormData): { productId: string; quantity: 
 // must not block PO creation).
 function parseProductLines(
   formData: FormData
-): { productId: string; quantity: number; eta: string | null }[] {
+): { productId: string; quantity: number; unit: "units" | "cartons"; eta: string | null }[] {
   const productIds = formData.getAll("line_product_id").map((v) => String(v).trim());
   const quantities = formData.getAll("line_quantity").map((v) => Number(v));
+  const units = formData.getAll("line_unit").map((v) => String(v).trim());
   const etas = formData.getAll("line_eta").map((v) => String(v).trim());
-  const lines: { productId: string; quantity: number; eta: string | null }[] = [];
+  const lines: { productId: string; quantity: number; unit: "units" | "cartons"; eta: string | null }[] = [];
   for (let i = 0; i < productIds.length; i++) {
     const productId = productIds[i];
     const quantity = quantities[i];
@@ -105,7 +106,8 @@ function parseProductLines(
     if (!Number.isFinite(quantity) || quantity <= 0) continue;
     const rawEta = etas[i] ?? "";
     const eta = /^\d{4}-\d{2}-\d{2}$/.test(rawEta) ? rawEta : null;
-    lines.push({ productId, quantity: Math.round(quantity), eta });
+    const unit = units[i] === "cartons" ? "cartons" : "units";
+    lines.push({ productId, quantity: Math.round(quantity), unit, eta });
   }
   return lines;
 }
@@ -255,16 +257,38 @@ export async function savePurchaseOrder(formData: FormData): Promise<ActionResul
   const { error: delErr } = await admin.from("incoming_stock").delete().eq("po_id", poId);
   if (delErr) return { ok: false, error: `Failed to reset product lines: ${delErr.message}` };
   if (lines.length > 0) {
+    // A line ordered in "cartons" is converted to main units via the product's
+    // units_per_carton — incoming_stock.quantity is always stored in main units
+    // so the dashboard's incoming/in-transit math is unchanged.
+    const cartonProductIds = [
+      ...new Set(lines.filter((l) => l.unit === "cartons").map((l) => l.productId)),
+    ];
+    const upcById = new Map<string, number>();
+    if (cartonProductIds.length > 0) {
+      const { data: prodRows, error: upcErr } = await admin
+        .from("products")
+        .select("id, units_per_carton")
+        .in("id", cartonProductIds);
+      if (upcErr) return { ok: false, error: `Failed to load pack sizes: ${upcErr.message}` };
+      for (const r of prodRows ?? []) {
+        const upc = Number((r as any).units_per_carton);
+        upcById.set((r as any).id, Number.isFinite(upc) && upc > 0 ? upc : 1);
+      }
+    }
+
     const { error: insErr } = await admin.from("incoming_stock").insert(
-      lines.map((line) => ({
-        po_id: poId,
-        product_id: line.productId,
-        quantity: line.quantity,
-        expected_date: line.eta || targetedEta || null,
-        status: "EXPECTED",
-        created_by: profile.id,
-        notes: poNumber ? `PO ${poNumber}` : "PO",
-      }))
+      lines.map((line) => {
+        const upc = line.unit === "cartons" ? upcById.get(line.productId) ?? 1 : 1;
+        return {
+          po_id: poId,
+          product_id: line.productId,
+          quantity: line.quantity * upc,
+          expected_date: line.eta || targetedEta || null,
+          status: "EXPECTED",
+          created_by: profile.id,
+          notes: poNumber ? `PO ${poNumber}` : "PO",
+        };
+      })
     );
     if (insErr) return { ok: false, error: `Failed to record product lines: ${insErr.message}` };
   }

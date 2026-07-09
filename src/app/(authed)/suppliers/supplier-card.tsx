@@ -14,6 +14,7 @@ type Product = {
   name: string;
   product_family: string | null;
   variation: string | null;
+  units_per_carton?: number | null;
 };
 
 type ProductSupplierRow = {
@@ -83,6 +84,7 @@ export function SupplierCard({
   const [assignCost, setAssignCost] = useState("");
   const [assignCurrency, setAssignCurrency] = useState<string>("MYR");
   const [assignPrimary, setAssignPrimary] = useState(false);
+  const [assignBasis, setAssignBasis] = useState<"unit" | "carton">("unit");
   const [assignMsg, setAssignMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const assignedProductIds = new Set(productSuppliers.map((ps) => ps.product_id));
@@ -90,6 +92,12 @@ export function SupplierCard({
     () => allProducts.filter((p) => !assignedProductIds.has(p.id)),
     [allProducts, assignedProductIds]
   );
+
+  const assignUpc = useMemo(() => {
+    const p = allProducts.find((x) => x.id === assignProductId);
+    const upc = Number(p?.units_per_carton);
+    return Number.isFinite(upc) && upc > 0 ? upc : 1;
+  }, [allProducts, assignProductId]);
 
   const totalCost = productSuppliers.reduce((sum, ps) => sum + Number(ps.unit_cost || 0), 0);
   const avgCost = productSuppliers.length > 0 ? totalCost / productSuppliers.length : 0;
@@ -117,12 +125,20 @@ export function SupplierCard({
       return;
     }
     startTransition(async () => {
-      const res = await assignProduct(supplier.id, assignProductId, cost, assignCurrency, assignPrimary);
+      const res = await assignProduct(
+        supplier.id,
+        assignProductId,
+        cost,
+        assignCurrency,
+        assignPrimary,
+        assignBasis
+      );
       if (res.ok) {
         setAssignMsg({ ok: true, text: "Product assigned" });
         setAssignProductId("");
         setAssignCost("");
         setAssignPrimary(false);
+        setAssignBasis("unit");
         setShowAssign(false);
       } else {
         setAssignMsg({ ok: false, text: res.error ?? "Failed to assign" });
@@ -266,7 +282,9 @@ export function SupplierCard({
                 </select>
               </div>
               <div>
-                <label className="block text-[10px] text-gray-500 mb-1">Cost/unit</label>
+                <label className="block text-[10px] text-gray-500 mb-1">
+                  Cost/{assignBasis === "carton" ? "carton" : "unit"}
+                </label>
                 <input
                   type="number"
                   min={0}
@@ -277,6 +295,20 @@ export function SupplierCard({
                   className="border border-gray-300 rounded-md px-2 py-1 text-sm w-28 focus:outline-none focus:ring-2 focus:ring-blue-400"
                 />
               </div>
+              {assignUpc > 1 && (
+                <div>
+                  <label className="block text-[10px] text-gray-500 mb-1">Basis</label>
+                  <select
+                    value={assignBasis}
+                    onChange={(e) => setAssignBasis(e.target.value as "unit" | "carton")}
+                    className="border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    title={`1 carton = ${assignUpc} units — stored per unit`}
+                  >
+                    <option value="unit">per unit</option>
+                    <option value="carton">per carton</option>
+                  </select>
+                </div>
+              )}
               <div>
                 <label className="block text-[10px] text-gray-500 mb-1">Currency</label>
                 <select
@@ -350,6 +382,7 @@ export function SupplierCard({
                             supplierId={supplier.id}
                             unitCost={ps.unit_cost}
                             costCurrency={ps.cost_currency}
+                            unitsPerCarton={Number(ps.products?.units_per_carton) || 1}
                           />
                         </td>
                         <td className="py-2 px-2">

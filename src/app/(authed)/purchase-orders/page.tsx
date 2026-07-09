@@ -46,7 +46,7 @@ export default async function PurchaseOrdersPage() {
       // Active products for the PO create form's product-lines picker.
       supabase
         .from("products")
-        .select("id, sku, name, product_family")
+        .select("id, sku, name, product_family, units_per_carton")
         .eq("is_active", true)
         .order("sku"),
     ]);
@@ -60,6 +60,7 @@ export default async function PurchaseOrdersPage() {
   const productOpts = (products ?? []).map((p: any) => ({
     id: p.id,
     label: `${p.sku} — ${p.name}`,
+    unitsPerCarton: Number(p.units_per_carton) || 1,
   }));
 
   return (

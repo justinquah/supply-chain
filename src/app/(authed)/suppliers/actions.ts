@@ -29,6 +29,37 @@ function revalidateSuppliers() {
   revalidatePath("/products");
 }
 
+type CostBasis = "unit" | "carton";
+
+/**
+ * Convert an entered cost to the canonical per-UNIT cost. Costs are always
+ * stored per-unit; when the SCM enters a per-carton price we divide by the
+ * product's units_per_carton. Guards divide-by-zero and treats a missing /
+ * <=1 units_per_carton as a no-op (per-carton == per-unit).
+ */
+async function toUnitCost(
+  adminClient: ReturnType<typeof createAdminClient>,
+  productId: string,
+  enteredCost: number,
+  basis: CostBasis
+): Promise<{ ok: true; unitCost: number } | { ok: false; error: string }> {
+  if (basis !== "carton") return { ok: true, unitCost: enteredCost };
+
+  const { data, error } = await adminClient
+    .from("products")
+    .select("units_per_carton")
+    .eq("id", productId)
+    .maybeSingle();
+  if (error) return { ok: false, error: error.message };
+
+  const upc = Number((data as any)?.units_per_carton);
+  if (!Number.isFinite(upc) || upc <= 1) {
+    // 1 unit per carton (or unset) → the toggle is a no-op.
+    return { ok: true, unitCost: enteredCost };
+  }
+  return { ok: true, unitCost: enteredCost / upc };
+}
+
 /**
  * Update a supplier's payment terms + deposit percent.
  * Gated to SCM/ADMIN. Writes via admin (service-role) client to avoid RLS
@@ -74,7 +105,8 @@ export async function assignProduct(
   productId: string,
   cost: number,
   currency: string,
-  isPrimary: boolean
+  isPrimary: boolean,
+  basis: CostBasis = "unit"
 ): Promise<ActionResult> {
   const profile = await requireRole("SCM", "ADMIN");
 
@@ -83,6 +115,11 @@ export async function assignProduct(
   if (!isCurrency(currency)) return { ok: false, error: "Invalid currency" };
 
   const adminClient = createAdminClient();
+
+  // Costs are stored per-UNIT; convert a per-carton entry down to per-unit.
+  const conv = await toUnitCost(adminClient, productId, cost, basis);
+  if (!conv.ok) return { ok: false, error: conv.error };
+  const unitCost = conv.unitCost;
 
   // If this is set as primary, unset any existing primary flag for this product first
   // (uq_product_suppliers_primary is a partial unique index on product_id WHERE is_primary).
@@ -99,7 +136,7 @@ export async function assignProduct(
     {
       product_id: productId,
       supplier_id: supplierId,
-      unit_cost: cost,
+      unit_cost: unitCost,
       cost_currency: currency,
       is_primary: isPrimary,
     },
@@ -112,7 +149,7 @@ export async function assignProduct(
     .insert({
       product_id: productId,
       supplier_id: supplierId,
-      unit_cost: cost,
+      unit_cost: unitCost,
       cost_currency: currency,
       effective_from: todayKL(),
       note: "Assigned to supplier",
@@ -135,7 +172,8 @@ export async function updateCost(
   supplierId: string,
   newCost: number,
   currency: string,
-  note?: string
+  note?: string,
+  basis: CostBasis = "unit"
 ): Promise<ActionResult> {
   const profile = await requireRole("SCM", "ADMIN");
 
@@ -145,9 +183,14 @@ export async function updateCost(
 
   const adminClient = createAdminClient();
 
+  // Costs are stored per-UNIT; convert a per-carton entry down to per-unit.
+  const conv = await toUnitCost(adminClient, productId, newCost, basis);
+  if (!conv.ok) return { ok: false, error: conv.error };
+  const unitCost = conv.unitCost;
+
   const { error } = await adminClient
     .from("product_suppliers")
-    .update({ unit_cost: newCost, cost_currency: currency })
+    .update({ unit_cost: unitCost, cost_currency: currency })
     .eq("product_id", productId)
     .eq("supplier_id", supplierId);
   if (error) return { ok: false, error: error.message };
@@ -157,7 +200,7 @@ export async function updateCost(
     .insert({
       product_id: productId,
       supplier_id: supplierId,
-      unit_cost: newCost,
+      unit_cost: unitCost,
       cost_currency: currency,
       effective_from: todayKL(),
       note: note?.trim() || null,

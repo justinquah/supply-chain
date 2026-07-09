@@ -16,6 +16,8 @@ const EMPTY = {
   unit_cost: "",
   cost_currency: "MYR",
   launch_date: "",
+  units_per_carton: "1",
+  stock_pieces_per_unit: "1",
   is_active: true,
 };
 
@@ -41,6 +43,8 @@ export function AddProductForm() {
       unit_cost: form.unit_cost ? Number(form.unit_cost) : null,
       cost_currency: form.cost_currency,
       launch_date: form.launch_date || null,
+      units_per_carton: form.units_per_carton ? Number(form.units_per_carton) : 1,
+      stock_pieces_per_unit: form.stock_pieces_per_unit ? Number(form.stock_pieces_per_unit) : 1,
       is_active: form.is_active,
     });
     setSaving(false);
@@ -133,6 +137,30 @@ export function AddProductForm() {
                 type="date"
                 value={form.launch_date}
                 onChange={(e) => set("launch_date", e.target.value)}
+                className="border border-gray-300 rounded-md px-2 py-1.5 bg-white"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-gray-600">Units / carton</span>
+              <input
+                type="number"
+                step="1"
+                min="1"
+                value={form.units_per_carton}
+                onChange={(e) => set("units_per_carton", e.target.value)}
+                className="border border-gray-300 rounded-md px-2 py-1.5 bg-white"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-gray-600" title="Pieces the stock file counts per main unit — imports divide by this">
+                Stock pcs / unit
+              </span>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={form.stock_pieces_per_unit}
+                onChange={(e) => set("stock_pieces_per_unit", e.target.value)}
                 className="border border-gray-300 rounded-md px-2 py-1.5 bg-white"
               />
             </label>

@@ -14,13 +14,13 @@ export default async function SuppliersPage() {
       .select(
         "id, name, company_name, email, supplier_payment_terms, supplier_deposit_percent, " +
           "product_suppliers(id, product_id, unit_cost, cost_currency, is_primary, " +
-          "products(id, sku, name, product_family, variation))"
+          "products(id, sku, name, product_family, variation, units_per_carton))"
       )
       .not("company_name", "is", null)
       .order("company_name"),
     supabase
       .from("products")
-      .select("id, sku, name, product_family, variation, is_active")
+      .select("id, sku, name, product_family, variation, units_per_carton, is_active")
       .eq("is_active", true)
       .order("product_family", { ascending: true }),
   ]);

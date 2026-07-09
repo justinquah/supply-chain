@@ -5,19 +5,28 @@ import { savePurchaseOrder } from "./actions";
 import { Button } from "@/components/ui/button";
 
 type Option = { id: string; label: string };
+type ProductOption = Option & { unitsPerCarton?: number };
 
-type ProductLine = { key: number; productId: string; quantity: string; eta: string };
+type ProductLine = {
+  key: number;
+  productId: string;
+  quantity: string;
+  unit: "units" | "cartons";
+  eta: string;
+};
 
 let lineKeySeq = 0;
 function newLine(): ProductLine {
-  return { key: ++lineKeySeq, productId: "", quantity: "", eta: "" };
+  return { key: ++lineKeySeq, productId: "", quantity: "", unit: "units", eta: "" };
 }
 
-// Repeatable product + quantity (+ optional per-line ETA) rows. Serialized as
-// parallel line_product_id[] / line_quantity[] / line_eta[] fields (parsed by
-// parseProductLines in actions.ts). Any products from any range may be added —
-// a single PO can carry lines across multiple ranges.
-function ProductLines({ products }: { products: Option[] }) {
+// Repeatable product + quantity (+ unit basis + optional per-line ETA) rows.
+// Serialized as parallel line_product_id[] / line_quantity[] / line_unit[] /
+// line_eta[] fields (parsed by parseProductLines in actions.ts). When a line is
+// ordered in "cartons" the server multiplies by the product's units_per_carton
+// so the stored incoming_stock quantity is always in main units. Any products
+// from any range may be added — a single PO can carry lines across multiple ranges.
+function ProductLines({ products }: { products: ProductOption[] }) {
   const [lines, setLines] = useState<ProductLine[]>([newLine(), newLine()]);
 
   function update(key: number, patch: Partial<ProductLine>) {
@@ -61,6 +70,18 @@ function ProductLines({ products }: { products: Option[] }) {
               className={inputCls + " w-24 shrink-0"}
               placeholder="qty"
             />
+            <select
+              name="line_unit"
+              value={line.unit}
+              onChange={(e) =>
+                update(line.key, { unit: e.target.value as "units" | "cartons" })
+              }
+              className={inputCls + " w-28 shrink-0"}
+              title="Cartons are converted to units on save (× units/carton)"
+            >
+              <option value="units">units</option>
+              <option value="cartons">cartons</option>
+            </select>
             <input
               name="line_eta"
               type="date"
@@ -95,7 +116,7 @@ export function PoForm({
 }: {
   suppliers: Option[];
   groups: string[];
-  products: Option[];
+  products: ProductOption[];
 }) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
