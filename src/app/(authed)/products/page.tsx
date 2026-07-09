@@ -2,6 +2,7 @@ import { createClient, getCurrentUser, requireRole } from "@/lib/supabase/server
 import { Card, CardContent } from "@/components/ui/card";
 import { LaunchDateCell } from "./launch-date-cell";
 import { PackFieldCell } from "./pack-field-cell";
+import { CategoryCell, type CategoryOption } from "./category-cell";
 import { AddProductForm } from "./add-product-form";
 import { ImportProductsForm } from "./import-products-form";
 
@@ -29,15 +30,21 @@ export default async function ProductsPage({
   let query = supabase
     .from("products")
     .select(
-      "id, sku, name, product_family, variation, launch_date, is_main, is_active, unit_cost, cost_currency, units_per_carton, stock_pieces_per_unit, product_categories(name), product_suppliers(unit_cost, cost_currency, is_primary, profiles(name, company_name))"
+      "id, sku, name, product_family, variation, launch_date, is_main, is_active, unit_cost, cost_currency, units_per_carton, stock_pieces_per_unit, category_id, product_categories(name), product_suppliers(unit_cost, cost_currency, is_primary, profiles(name, company_name))"
     )
     .order("variation", { ascending: true });
   if (!showInactive) query = query.eq("is_active", true);
 
-  const [{ data: products }, { data: groups }] = await Promise.all([
+  const [{ data: products }, { data: groups }, { data: categories }] = await Promise.all([
     query,
     supabase.from("product_groups").select("name, loading_capacity, product_categories(name)"),
+    supabase.from("product_categories").select("id, name").order("name", { ascending: true }),
   ]);
+
+  const categoryOptions: CategoryOption[] = (categories ?? []).map((c: any) => ({
+    id: String(c.id),
+    name: c.name,
+  }));
 
   const groupMeta = new Map<string, any>();
   for (const g of groups ?? []) groupMeta.set(g.name, g);
@@ -134,6 +141,7 @@ export default async function ProductsPage({
                   <thead>
                     <tr className="text-left text-gray-500 border-b border-gray-100">
                       <th className="py-2 pl-4 pr-3 font-medium">Variation</th>
+                      <th className="py-2 px-3 font-medium">Category</th>
                       <th className="py-2 px-3 font-medium">Primary supplier</th>
                       <th className="py-2 px-3 font-medium text-right">Cost/unit</th>
                       <th className="py-2 px-3 font-medium text-right">Units / carton</th>
@@ -176,6 +184,19 @@ export default async function ProductsPage({
                               </span>
                             )}
                             <div className="text-xs text-gray-400">{p.sku}</div>
+                          </td>
+                          <td className="py-2 px-3">
+                            {canManage ? (
+                              <CategoryCell
+                                productId={p.id}
+                                categoryId={p.category_id ?? null}
+                                options={categoryOptions}
+                              />
+                            ) : (
+                              <span className="text-gray-600">
+                                {p.product_categories?.name || "Uncategorised"}
+                              </span>
+                            )}
                           </td>
                           <td className="py-2 px-3 text-gray-600">
                             {supplierName}

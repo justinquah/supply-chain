@@ -98,6 +98,34 @@ export async function updateStockPiecesPerUnit(
   return { ok: true };
 }
 
+/**
+ * Update a product's category (products.category_id → product_categories).
+ * Gated to SCM/ADMIN; writes via the admin client, same boundary as the other
+ * inline product edits. A null categoryId means "Uncategorised". Revalidates
+ * the sales-trend + dashboard views since category drives the trend hierarchy.
+ */
+export async function updateProductCategory(
+  productId: string,
+  categoryId: string | null
+): Promise<ActionResult> {
+  await requireRole("SCM", "ADMIN");
+
+  if (!productId) return { ok: false, error: "Missing product" };
+
+  const adminClient = createAdminClient();
+  const { error } = await adminClient
+    .from("products")
+    .update({ category_id: categoryId || null })
+    .eq("id", productId);
+
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/products");
+  revalidatePath("/sales/trend");
+  revalidatePath("/dashboard");
+  return { ok: true };
+}
+
 const CURRENCY_CODES = ["MYR", "USD", "CNY", "THB"] as const;
 type CurrencyCode = (typeof CURRENCY_CODES)[number];
 

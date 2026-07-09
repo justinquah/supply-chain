@@ -32,7 +32,7 @@ export default async function SalesTrendPage({
   const { data: sales } = await supabase
     .from("monthly_sales")
     .select(
-      "year, month, channel, units_equivalent, main_product_id, products(id, sku, name, product_family, variation, is_main, is_active)"
+      "year, month, channel, units_equivalent, main_product_id, products(id, sku, name, product_family, variation, is_main, is_active, product_categories(name))"
     );
 
   const rows = sales ?? [];
@@ -72,6 +72,7 @@ export default async function SalesTrendPage({
           name: prod.name,
           variation: prod.variation,
           product_family: prod.product_family,
+          category: (prod as any).product_categories?.name || "Uncategorised",
           units: {},
         },
         online: {},
@@ -130,10 +131,34 @@ export default async function SalesTrendPage({
     .sort((a, b) => b.mom.recentAvg - a.mom.recentAvg)
     .slice(0, 5);
 
+  // Category aggregation — monthly series + momentum + latest-month units.
+  const catSeries = new Map<string, number[]>();
+  for (const { p, series } of withMom) {
+    const key = p.category || "Uncategorised";
+    const arr = catSeries.get(key) ?? months.map(() => 0);
+    catSeries.set(key, arr.map((v, i) => v + series[i]));
+  }
+  const categoriesTrend = [...catSeries.entries()]
+    .map(([category, s]) => ({
+      category,
+      series: s,
+      mom: computeMomentum(s),
+      latest: s.length ? s[s.length - 1] : 0,
+    }))
+    .sort((a, b) => b.latest - a.latest);
+
   const overall = months.map((m, i) =>
     withMom.reduce((s, x) => s + x.series[i], 0)
   );
   const overallMom = computeMomentum(overall);
+
+  // Part 2 — total card month-over-month.
+  const overallLatest = overall.length ? overall[overall.length - 1] : 0;
+  const overallPrev = overall.length > 1 ? overall[overall.length - 2] : null;
+  const overallMoMPct =
+    overallPrev != null && overallPrev > 0
+      ? (overallLatest - overallPrev) / overallPrev
+      : null;
 
   const label = (p: TrendProductRow) => p.variation || p.name;
 
@@ -176,9 +201,26 @@ export default async function SalesTrendPage({
                 </div>
                 <div className="text-2xl font-semibold mt-1">
                   {overall.length
-                    ? Math.round(overall[overall.length - 1]).toLocaleString("en-MY")
+                    ? Math.round(overallLatest).toLocaleString("en-MY")
                     : "—"}
-                  <span className="text-sm font-normal text-gray-400 ml-2">latest month</span>
+                  <span className="text-sm font-normal text-gray-400 ml-2">latest</span>
+                  {overallPrev != null && (
+                    <>
+                      <span className="text-sm font-normal text-gray-400 ml-2">
+                        · {Math.round(overallPrev).toLocaleString("en-MY")} prev
+                      </span>
+                      {overallMoMPct != null && (
+                        <span
+                          className={cn(
+                            "text-sm font-medium ml-2",
+                            overallMoMPct >= 0 ? "text-emerald-600" : "text-red-600"
+                          )}
+                        >
+                          {overallMoMPct >= 0 ? "▲" : "▼"} {fmtGrowth(overallMoMPct)}
+                        </span>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
               <div className="flex items-center gap-3">
@@ -212,6 +254,49 @@ export default async function SalesTrendPage({
               items={growingRanges.map((r) => ({ label: r.family, sku: "", series: r.series, mom: r.mom }))}
             />
           </div>
+
+          {/* By category — growth at a glance */}
+          {categoriesTrend.length > 0 && (
+            <div className="rounded-lg border border-gray-200 border-l-4 border-l-brand/50 p-3 bg-white">
+              <div className="flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full bg-brand" />
+                <div className="text-sm font-medium text-gray-800">By category</div>
+              </div>
+              <div className="text-[11px] text-gray-400 mb-2 ml-3.5">
+                latest-month units · momentum
+              </div>
+              <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 divide-y sm:divide-y-0 divide-gray-100">
+                {categoriesTrend.map((c) => (
+                  <li
+                    key={c.category}
+                    className="flex items-center justify-between gap-2 py-1.5"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm text-gray-700 truncate">{c.category}</div>
+                      <div className="text-[10px] text-gray-400 tabular-nums">
+                        {Math.round(c.latest).toLocaleString("en-MY")} units
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Sparkline values={c.series} dir={c.mom.dir} width={64} height={20} />
+                      <span
+                        className={cn(
+                          "text-xs font-medium tabular-nums w-12 text-right",
+                          c.mom.dir === "up"
+                            ? "text-emerald-600"
+                            : c.mom.dir === "down"
+                            ? "text-red-600"
+                            : "text-gray-400"
+                        )}
+                      >
+                        {fmtGrowth(c.mom.growthPct)}
+                      </span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </>
       )}
 

@@ -37,6 +37,7 @@ export type TrendProductRow = {
   name: string;
   variation: string | null;
   product_family: string | null;
+  category: string;
   /** month key (`${year}-${month}`) -> units for the selected channel */
   units: Record<string, number>;
 };
@@ -53,9 +54,16 @@ function monthLabel(m: TrendMonth) {
   return `${MONTHS[m.month]} ${String(m.year).slice(-2)}`;
 }
 
-type Group = {
+type RangeGroup = {
   family: string;
   rows: TrendProductRow[];
+  units: Record<string, number>;
+  total: number;
+};
+
+type CategoryGroup = {
+  category: string;
+  ranges: RangeGroup[];
   units: Record<string, number>;
   total: number;
 };
@@ -79,38 +87,93 @@ export function SalesTrendTable({
   products: TrendProductRow[];
   months: TrendMonth[];
 }) {
-  const [open, setOpen] = useState<Record<string, boolean>>({});
+  // Two independent expand states: categories default OPEN, ranges default CLOSED.
+  const [openCategory, setOpenCategory] = useState<Record<string, boolean>>({});
+  const [openRange, setOpenRange] = useState<Record<string, boolean>>({});
 
-  const map = new Map<string, Group>();
+  // Build Category -> Range -> rows, aggregating monthly units at every level.
+  const catMap = new Map<string, CategoryGroup>();
   for (const p of products) {
+    const cat = p.category || "Uncategorised";
     const fam = p.product_family || p.name;
-    const g =
-      map.get(fam) ?? ({ family: fam, rows: [], units: {}, total: 0 } satisfies Group);
-    g.rows.push(p);
+
+    let cg = catMap.get(cat);
+    if (!cg) {
+      cg = { category: cat, ranges: [], units: {}, total: 0 };
+      catMap.set(cat, cg);
+    }
+
+    let rg = cg.ranges.find((r) => r.family === fam);
+    if (!rg) {
+      rg = { family: fam, rows: [], units: {}, total: 0 };
+      cg.ranges.push(rg);
+    }
+    rg.rows.push(p);
+
     for (const m of months) {
       const key = monthKey(m);
       const v = Number(p.units[key] || 0);
-      g.units[key] = (g.units[key] || 0) + v;
-      g.total += v;
+      rg.units[key] = (rg.units[key] || 0) + v;
+      rg.total += v;
+      cg.units[key] = (cg.units[key] || 0) + v;
+      cg.total += v;
     }
-    map.set(fam, g);
   }
-  const groups = [...map.values()].sort((a, b) => b.total - a.total);
 
-  function isOpen(fam: string, multi: boolean) {
-    if (fam in open) return open[fam];
-    return multi;
+  const categories = [...catMap.values()].sort((a, b) => b.total - a.total);
+  for (const cg of categories) cg.ranges.sort((a, b) => b.total - a.total);
+
+  function isCategoryOpen(cat: string) {
+    if (cat in openCategory) return openCategory[cat];
+    return true; // default OPEN
+  }
+  function isRangeOpen(rangeKey: string) {
+    if (rangeKey in openRange) return openRange[rangeKey];
+    return false; // default CLOSED
   }
 
   const lastMonthKey = months.length > 0 ? monthKey(months[months.length - 1]) : null;
   const prevMonthKey = months.length > 1 ? monthKey(months[months.length - 2]) : null;
+
+  function MonthCells({
+    units,
+    dense,
+  }: {
+    units: Record<string, number>;
+    dense?: boolean;
+  }) {
+    return (
+      <>
+        {months.map((m) => {
+          const key = monthKey(m);
+          const v = Number(units[key] || 0);
+          const isLast = key === lastMonthKey;
+          const prevV = prevMonthKey ? Number(units[prevMonthKey] || 0) : undefined;
+          return (
+            <td
+              key={key}
+              className={cn(
+                "px-3 text-right tabular-nums",
+                dense ? "py-1.5" : "py-2.5 font-medium"
+              )}
+            >
+              {n(v)}
+              {isLast && <TrendCue prev={prevV} latest={v} />}
+            </td>
+          );
+        })}
+      </>
+    );
+  }
 
   return (
     <div className="overflow-auto max-h-[75vh] bg-white rounded-lg border border-gray-200">
       <table className="w-full text-sm">
         <thead className="sticky top-0 z-20">
           <tr className="text-left text-gray-500 border-b border-gray-200 bg-gray-50 text-[11px] uppercase tracking-wide">
-            <th className="py-2 pl-4 pr-3 font-semibold sticky left-0 z-30 bg-gray-50">Product range</th>
+            <th className="py-2 pl-4 pr-3 font-semibold sticky left-0 z-30 bg-gray-50">
+              Category · range · product
+            </th>
             <th className="py-2 px-3 font-semibold text-center">Trend</th>
             <th className="py-2 px-3 font-semibold text-left whitespace-nowrap">Momentum</th>
             {months.map((m) => (
@@ -124,106 +187,130 @@ export function SalesTrendTable({
           </tr>
         </thead>
         <tbody>
-          {groups.map((g) => {
-            const multi = g.rows.length > 1;
-            const expanded = isOpen(g.family, multi);
-            const gSeries = months.map((m) => g.units[monthKey(m)] || 0);
-            const gMom = computeMomentum(gSeries);
+          {categories.map((cg) => {
+            const catExpanded = isCategoryOpen(cg.category);
+            const catSeries = months.map((m) => cg.units[monthKey(m)] || 0);
+            const catMom = computeMomentum(catSeries);
             return (
-              <Fragment key={g.family}>
+              <Fragment key={cg.category}>
+                {/* Category row */}
                 <tr
-                  className={cn(
-                    "border-b border-gray-100 bg-white",
-                    multi && "cursor-pointer hover:bg-gray-50"
-                  )}
+                  className="border-b border-gray-200 bg-white cursor-pointer hover:bg-gray-50"
                   onClick={() =>
-                    multi && setOpen((o) => ({ ...o, [g.family]: !isOpen(g.family, true) }))
+                    setOpenCategory((o) => ({
+                      ...o,
+                      [cg.category]: !isCategoryOpen(cg.category),
+                    }))
                   }
                 >
-                  <td className="py-2.5 pl-4 pr-3 font-medium text-gray-900 sticky left-0 z-10 bg-white">
+                  <td className="py-2.5 pl-4 pr-3 font-semibold text-gray-900 sticky left-0 z-10 bg-white">
                     <span className="inline-flex items-center gap-1.5">
-                      {multi && (
-                        <span className="text-gray-400 text-xs w-3">
-                          {expanded ? "▾" : "▸"}
-                        </span>
-                      )}
-                      {!multi && <span className="w-3" />}
-                      {g.family}
-                      {multi && (
-                        <span className="text-xs text-gray-400 font-normal">
-                          ({g.rows.length})
-                        </span>
-                      )}
+                      <span className="text-gray-400 text-xs w-3">
+                        {catExpanded ? "▾" : "▸"}
+                      </span>
+                      {cg.category}
+                      <span className="text-xs text-gray-400 font-normal">
+                        ({cg.ranges.length})
+                      </span>
                     </span>
                   </td>
                   <td className="py-2.5 px-3 text-center">
-                    <Sparkline values={gSeries} dir={gMom.dir} />
+                    <Sparkline values={catSeries} dir={catMom.dir} />
                   </td>
                   <td className="py-2.5 px-3">
-                    <MomentumBadge m={gMom} />
+                    <MomentumBadge m={catMom} />
                   </td>
-                  {months.map((m) => {
-                    const key = monthKey(m);
-                    const v = g.units[key] || 0;
-                    const isLast = key === lastMonthKey;
-                    const prevV = prevMonthKey ? g.units[prevMonthKey] : undefined;
+                  <MonthCells units={cg.units} />
+                </tr>
+
+                {catExpanded &&
+                  cg.ranges.map((rg) => {
+                    const rangeKey = `${cg.category}|${rg.family}`;
+                    const multi = rg.rows.length > 1;
+                    const rangeExpanded = isRangeOpen(rangeKey);
+                    const rSeries = months.map((m) => rg.units[monthKey(m)] || 0);
+                    const rMom = computeMomentum(rSeries);
                     return (
-                      <td
-                        key={key}
-                        className="py-2.5 px-3 text-right tabular-nums font-medium"
-                      >
-                        {n(v)}
-                        {isLast && <TrendCue prev={prevV} latest={v} />}
-                      </td>
+                      <Fragment key={rangeKey}>
+                        {/* Range row */}
+                        <tr
+                          className={cn(
+                            "border-b border-gray-100 bg-white text-gray-700",
+                            multi && "cursor-pointer hover:bg-gray-50"
+                          )}
+                          onClick={() =>
+                            multi &&
+                            setOpenRange((o) => ({
+                              ...o,
+                              [rangeKey]: !isRangeOpen(rangeKey),
+                            }))
+                          }
+                        >
+                          <td className="py-2 pl-8 pr-3 font-medium sticky left-0 z-10 bg-white">
+                            <span className="inline-flex items-center gap-1.5">
+                              {multi ? (
+                                <span className="text-gray-400 text-xs w-3">
+                                  {rangeExpanded ? "▾" : "▸"}
+                                </span>
+                              ) : (
+                                <span className="w-3" />
+                              )}
+                              {rg.family}
+                              {multi && (
+                                <span className="text-xs text-gray-400 font-normal">
+                                  ({rg.rows.length})
+                                </span>
+                              )}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 text-center">
+                            <Sparkline values={rSeries} dir={rMom.dir} />
+                          </td>
+                          <td className="py-2 px-3">
+                            <MomentumBadge m={rMom} />
+                          </td>
+                          <MonthCells units={rg.units} />
+                        </tr>
+
+                        {rangeExpanded &&
+                          rg.rows
+                            .slice()
+                            .sort((a, b) => {
+                              const at = months.reduce((s, m) => s + Number(a.units[monthKey(m)] || 0), 0);
+                              const bt = months.reduce((s, m) => s + Number(b.units[monthKey(m)] || 0), 0);
+                              return bt - at;
+                            })
+                            .map((p) => {
+                              const pSeries = months.map((m) => Number(p.units[monthKey(m)] || 0));
+                              const pMom = computeMomentum(pSeries);
+                              return (
+                                <tr
+                                  key={p.id}
+                                  className="border-b border-gray-100 bg-gray-50/40 text-gray-600"
+                                >
+                                  <td className="py-1.5 pl-12 pr-3 sticky left-0 z-10 bg-gray-50">
+                                    {p.variation || p.name}
+                                    <span className="text-xs text-gray-400 ml-2">{p.sku}</span>
+                                  </td>
+                                  <td className="py-1.5 px-3 text-center">
+                                    <Sparkline values={pSeries} dir={pMom.dir} />
+                                  </td>
+                                  <td className="py-1.5 px-3">
+                                    <MomentumBadge m={pMom} />
+                                  </td>
+                                  <MonthCells units={p.units} dense />
+                                </tr>
+                              );
+                            })}
+                      </Fragment>
                     );
                   })}
-                </tr>
-                {expanded &&
-                  g.rows
-                    .sort((a, b) => {
-                      const at = months.reduce((s, m) => s + Number(a.units[monthKey(m)] || 0), 0);
-                      const bt = months.reduce((s, m) => s + Number(b.units[monthKey(m)] || 0), 0);
-                      return bt - at;
-                    })
-                    .map((p) => {
-                      const pSeries = months.map((m) => Number(p.units[monthKey(m)] || 0));
-                      const pMom = computeMomentum(pSeries);
-                      return (
-                      <tr
-                        key={p.id}
-                        className="border-b border-gray-100 bg-gray-50/40 text-gray-600"
-                      >
-                        <td className="py-1.5 pl-10 pr-3 sticky left-0 z-10 bg-gray-50">
-                          {p.variation || p.name}
-                          <span className="text-xs text-gray-400 ml-2">{p.sku}</span>
-                        </td>
-                        <td className="py-1.5 px-3 text-center">
-                          <Sparkline values={pSeries} dir={pMom.dir} />
-                        </td>
-                        <td className="py-1.5 px-3">
-                          <MomentumBadge m={pMom} />
-                        </td>
-                        {months.map((m) => {
-                          const key = monthKey(m);
-                          const v = Number(p.units[key] || 0);
-                          const isLast = key === lastMonthKey;
-                          const prevV = prevMonthKey ? Number(p.units[prevMonthKey] || 0) : undefined;
-                          return (
-                            <td key={key} className="py-1.5 px-3 text-right tabular-nums">
-                              {n(v)}
-                              {isLast && <TrendCue prev={prevV} latest={v} />}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                      );
-                    })}
               </Fragment>
             );
           })}
         </tbody>
       </table>
-      {groups.length === 0 && (
+      {categories.length === 0 && (
         <p className="text-sm text-gray-500 py-8 text-center">
           No sales data available.
         </p>
