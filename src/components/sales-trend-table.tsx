@@ -2,6 +2,24 @@
 
 import { Fragment, useState } from "react";
 import { cn } from "@/lib/utils";
+import { Sparkline } from "@/components/sparkline";
+import { computeMomentum, fmtGrowth, type Momentum } from "@/lib/sales-trend";
+
+function MomentumBadge({ m }: { m: Momentum }) {
+  if (m.quiet) return <span className="text-gray-300 text-xs">—</span>;
+  const map = {
+    up: { cls: "bg-emerald-50 text-emerald-700", label: "Growing" },
+    down: { cls: "bg-red-50 text-red-700", label: "Declining" },
+    flat: { cls: "bg-gray-100 text-gray-500", label: "Steady" },
+  } as const;
+  const s = map[m.dir];
+  return (
+    <span className={cn("inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap", s.cls)}>
+      {m.dir === "up" ? "▲" : m.dir === "down" ? "▼" : "▪"} {s.label}
+      <span className="opacity-70">{fmtGrowth(m.growthPct)}</span>
+    </span>
+  );
+}
 
 const MONTHS = [
   "", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -93,6 +111,8 @@ export function SalesTrendTable({
         <thead className="sticky top-0 z-20">
           <tr className="text-left text-gray-500 border-b border-gray-200 bg-gray-50 text-[11px] uppercase tracking-wide">
             <th className="py-2 pl-4 pr-3 font-semibold sticky left-0 z-30 bg-gray-50">Product range</th>
+            <th className="py-2 px-3 font-semibold text-center">Trend</th>
+            <th className="py-2 px-3 font-semibold text-left whitespace-nowrap">Momentum</th>
             {months.map((m) => (
               <th
                 key={monthKey(m)}
@@ -107,6 +127,8 @@ export function SalesTrendTable({
           {groups.map((g) => {
             const multi = g.rows.length > 1;
             const expanded = isOpen(g.family, multi);
+            const gSeries = months.map((m) => g.units[monthKey(m)] || 0);
+            const gMom = computeMomentum(gSeries);
             return (
               <Fragment key={g.family}>
                 <tr
@@ -134,6 +156,12 @@ export function SalesTrendTable({
                       )}
                     </span>
                   </td>
+                  <td className="py-2.5 px-3 text-center">
+                    <Sparkline values={gSeries} dir={gMom.dir} />
+                  </td>
+                  <td className="py-2.5 px-3">
+                    <MomentumBadge m={gMom} />
+                  </td>
                   {months.map((m) => {
                     const key = monthKey(m);
                     const v = g.units[key] || 0;
@@ -157,7 +185,10 @@ export function SalesTrendTable({
                       const bt = months.reduce((s, m) => s + Number(b.units[monthKey(m)] || 0), 0);
                       return bt - at;
                     })
-                    .map((p) => (
+                    .map((p) => {
+                      const pSeries = months.map((m) => Number(p.units[monthKey(m)] || 0));
+                      const pMom = computeMomentum(pSeries);
+                      return (
                       <tr
                         key={p.id}
                         className="border-b border-gray-100 bg-gray-50/40 text-gray-600"
@@ -165,6 +196,12 @@ export function SalesTrendTable({
                         <td className="py-1.5 pl-10 pr-3 sticky left-0 z-10 bg-gray-50">
                           {p.variation || p.name}
                           <span className="text-xs text-gray-400 ml-2">{p.sku}</span>
+                        </td>
+                        <td className="py-1.5 px-3 text-center">
+                          <Sparkline values={pSeries} dir={pMom.dir} />
+                        </td>
+                        <td className="py-1.5 px-3">
+                          <MomentumBadge m={pMom} />
                         </td>
                         {months.map((m) => {
                           const key = monthKey(m);
@@ -179,7 +216,8 @@ export function SalesTrendTable({
                           );
                         })}
                       </tr>
-                    ))}
+                      );
+                    })}
               </Fragment>
             );
           })}
