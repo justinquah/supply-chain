@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import * as XLSX from "xlsx";
 import { getCurrentUser } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { recomputePoAmount } from "./actions";
 import {
   PO_WORKFLOW_STATES,
   PO_WORKFLOW_LABELS,
@@ -750,6 +751,9 @@ export async function importPoLines(formData: FormData): Promise<ImportPoLinesRe
       continue;
     }
     linesCreated += inserts.length;
+
+    // Keep the PO value in sync with its freshly-imported lines × supplier cost.
+    await recomputePoAmount(admin, poId);
   }
 
   revalidatePath("/purchase-orders");

@@ -1,8 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient, getCurrentUser, requireRole } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DocBadges } from "../doc-badge";
+import { DocUpload } from "./doc-upload";
 import { Stepper } from "./stepper";
 import { StageForms } from "./stage-forms";
 import { ShipmentForms } from "./shipment-forms";
@@ -79,7 +81,7 @@ export default async function PurchaseOrderDetailPage({
       supabase
         .from("purchase_orders")
         .select(
-          "id, po_number, status, currency, invoice_currency, product_group, " +
+          "id, po_number, status, currency, invoice_currency, product_group, supplier_id, " +
             "expected_invoice_amount, deposit_percent, payment_terms, deposit_due_date, balance_due_date, " +
             "invoice_amount, invoice_number, invoice_date, targeted_eta, actual_eta, notes, created_at, " +
             "etd, supplier_eta, logistics_eta, eta_to_warehouse, clearance_status, eta_delayed, delay_reason, " +
@@ -105,7 +107,7 @@ export default async function PurchaseOrderDetailPage({
       supabase
         .from("incoming_stock")
         .select(
-          "id, quantity, expected_date, status, notes, " +
+          "id, product_id, quantity, expected_date, status, notes, " +
             "qty_received, qty_damaged, qty_short, qty_extra, " +
             "product:products(sku, name, product_family, variation)"
         )
@@ -135,6 +137,46 @@ export default async function PurchaseOrderDetailPage({
   const docTypes = new Set(docs.map((d) => d.doc_type));
   const supplier = poRow.supplier as { name?: string; company_name?: string } | null;
   const cur = poRow.invoice_currency || poRow.currency || "MYR";
+
+  // Per-line PO value = quantity × the (product, supplier) unit cost. Fetched via
+  // the admin client so every internal role that can view this PO sees the amounts
+  // (LOGISTICS/WAREHOUSE cannot read product_suppliers under RLS). Each PO's lines
+  // share one supplier → one cost currency.
+  const supplierId = (poRow.supplier_id ?? null) as string | null;
+  const lineProductIds = [
+    ...new Set(incomingRows.map((r) => String(r.product_id)).filter(Boolean)),
+  ];
+  const costByProduct = new Map<string, { unitCost: number; currency: string }>();
+  if (supplierId && lineProductIds.length > 0) {
+    const admin = createAdminClient();
+    const { data: costRows } = await admin
+      .from("product_suppliers")
+      .select("product_id, unit_cost, cost_currency")
+      .eq("supplier_id", supplierId)
+      .in("product_id", lineProductIds);
+    for (const c of (costRows ?? []) as any[]) {
+      const unitCost = Number(c.unit_cost);
+      if (!Number.isFinite(unitCost)) continue;
+      costByProduct.set(String(c.product_id), {
+        unitCost,
+        currency: String(c.cost_currency),
+      });
+    }
+  }
+  let poValueFromLines = 0;
+  let lineCurrency: string | null = null;
+  for (const row of incomingRows) {
+    const cost = costByProduct.get(String(row.product_id));
+    if (!cost) continue;
+    const qty = Number(row.quantity);
+    if (!Number.isFinite(qty)) continue;
+    poValueFromLines += qty * cost.unitCost;
+    if (!lineCurrency) lineCurrency = cost.currency;
+  }
+  const hasLineValue = poValueFromLines > 0;
+
+  // Internal roles that handle PO paperwork may upload documents at any stage.
+  const canUploadDoc = ["SCM", "ADMIN", "ACCOUNTS", "FINANCE", "LOGISTICS"].includes(role);
 
   const isActor = canActOnState(role, poRow.status);
   const waitingOn = waitingOnLabel(poRow.status);
@@ -209,7 +251,10 @@ export default async function PurchaseOrderDetailPage({
             <CardTitle>Details</CardTitle>
           </CardHeader>
           <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
-            <Detail label="Expected invoice amount" value={money(poRow.expected_invoice_amount, cur)} />
+            <Detail
+              label="Expected invoice amount"
+              value={money(poRow.expected_invoice_amount, poRow.invoice_currency || cur)}
+            />
             <Detail label="Invoice amount" value={money(poRow.invoice_amount, cur)} />
             <Detail label="Invoice number" value={poRow.invoice_number || "—"} />
             <Detail label="Invoice date" value={date(poRow.invoice_date)} />
@@ -282,6 +327,7 @@ export default async function PurchaseOrderDetailPage({
         </CardHeader>
         <CardContent>
           <DocBadges docs={docs} />
+          {canUploadDoc && <DocUpload poId={poRow.id} />}
         </CardContent>
       </Card>
 
@@ -341,6 +387,7 @@ export default async function PurchaseOrderDetailPage({
                 <tr className="text-left text-gray-500 border-b border-gray-200">
                   <th className="py-2 pl-4 pr-3 font-medium">Product</th>
                   <th className="py-2 px-3 font-medium text-right">Qty</th>
+                  <th className="py-2 px-3 font-medium text-right">Amount</th>
                   <th className="py-2 px-3 font-medium">Expected date</th>
                   <th className="py-2 pr-4 pl-3 font-medium">Status</th>
                 </tr>
@@ -356,6 +403,11 @@ export default async function PurchaseOrderDetailPage({
                   const label = p?.product_family
                     ? `${p.product_family}${p.variation ? " — " + p.variation : ""}`
                     : p?.name || "—";
+                  const cost = costByProduct.get(String(row.product_id));
+                  const lineAmount =
+                    cost && Number.isFinite(Number(row.quantity))
+                      ? Number(row.quantity) * cost.unitCost
+                      : null;
                   return (
                     <tr key={row.id} className="border-b border-gray-100">
                       <td className="py-2 pl-4 pr-3 text-gray-900">
@@ -365,6 +417,9 @@ export default async function PurchaseOrderDetailPage({
                         )}
                       </td>
                       <td className="py-2 px-3 text-right tabular-nums">{row.quantity}</td>
+                      <td className="py-2 px-3 text-right tabular-nums">
+                        {money(lineAmount, cost?.currency)}
+                      </td>
                       <td className="py-2 px-3">{date(row.expected_date)}</td>
                       <td className="py-2 pr-4 pl-3">
                         <span
@@ -384,6 +439,20 @@ export default async function PurchaseOrderDetailPage({
                   );
                 })}
               </tbody>
+              {hasLineValue && (
+                <tfoot>
+                  <tr className="border-t border-gray-200">
+                    <td className="py-2 pl-4 pr-3 font-medium text-gray-700">
+                      PO value (from lines)
+                    </td>
+                    <td />
+                    <td className="py-2 px-3 text-right tabular-nums font-semibold text-gray-900">
+                      {money(poValueFromLines, lineCurrency || cur)}
+                    </td>
+                    <td colSpan={2} />
+                  </tr>
+                </tfoot>
+              )}
             </table>
           </CardContent>
         </Card>

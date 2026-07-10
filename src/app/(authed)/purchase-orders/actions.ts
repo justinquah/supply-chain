@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { createClient, getCurrentUser } from "@/lib/supabase/server";
+import { createClient, getCurrentUser, requireRole } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   PO_DRAFT_CREATORS,
@@ -66,6 +66,82 @@ async function uploadDoc(
 
 function isFile(v: FormDataEntryValue | null): v is File {
   return !!v && typeof v !== "string" && (v as File).size > 0;
+}
+
+// Recompute a PO's expected_invoice_amount + invoice_currency from its product
+// lines × the per-(product, supplier) cost. Called at the end of every path that
+// writes/edits a PO's incoming_stock lines. Uses the caller's admin
+// (service-role) client so it works regardless of the actor's RLS. Leaves the
+// fields untouched when there are no priced lines (never zeroes them out).
+export async function recomputePoAmount(
+  admin: ReturnType<typeof createAdminClient>,
+  poId: string
+): Promise<void> {
+  // 1. The PO's supplier — costs are per (product, supplier).
+  const { data: po } = await admin
+    .from("purchase_orders")
+    .select("supplier_id")
+    .eq("id", poId)
+    .maybeSingle();
+  const supplierId = (po as any)?.supplier_id as string | null | undefined;
+  if (!supplierId) return;
+
+  // 2. The PO's incoming lines (quantities are stored in main units).
+  const { data: lineData } = await admin
+    .from("incoming_stock")
+    .select("product_id, quantity")
+    .eq("po_id", poId);
+  const lines = (lineData ?? []) as { product_id: string; quantity: number }[];
+  if (lines.length === 0) return;
+
+  // 3. The costs for those products under this supplier.
+  const productIds = [...new Set(lines.map((l) => String(l.product_id)))];
+  const { data: costData } = await admin
+    .from("product_suppliers")
+    .select("product_id, unit_cost, cost_currency")
+    .eq("supplier_id", supplierId)
+    .in("product_id", productIds);
+  const costByProduct = new Map<string, { unitCost: number; currency: string }>();
+  for (const c of (costData ?? []) as any[]) {
+    const unitCost = Number(c.unit_cost);
+    if (!Number.isFinite(unitCost)) continue;
+    costByProduct.set(String(c.product_id), {
+      unitCost,
+      currency: String(c.cost_currency),
+    });
+  }
+
+  // 4. amount = Σ quantity × unit_cost (priced lines only); currency = the most
+  // common cost currency among priced lines.
+  let amount = 0;
+  const currencyCount = new Map<string, number>();
+  for (const line of lines) {
+    const cost = costByProduct.get(String(line.product_id));
+    if (!cost) continue;
+    const qty = Number(line.quantity);
+    if (!Number.isFinite(qty)) continue;
+    amount += qty * cost.unitCost;
+    currencyCount.set(cost.currency, (currencyCount.get(cost.currency) ?? 0) + 1);
+  }
+  if (amount <= 0 || currencyCount.size === 0) return;
+
+  let currency = "MYR";
+  let best = -1;
+  for (const [cur, count] of currencyCount) {
+    if (count > best) {
+      best = count;
+      currency = cur;
+    }
+  }
+
+  // 5. Persist. round(amount, 2).
+  await admin
+    .from("purchase_orders")
+    .update({
+      expected_invoice_amount: Math.round(amount * 100) / 100,
+      invoice_currency: currency,
+    })
+    .eq("id", poId);
 }
 
 // Parse repeatable "Shipping lines" rows (product_id[] + quantity[]) submitted
@@ -161,6 +237,33 @@ async function getPoStatus(
     .eq("id", poId)
     .maybeSingle();
   return data?.status ?? null;
+}
+
+// Direct, stage-independent document upload from the PO detail's Documents card.
+// Available to the internal roles that handle PO paperwork at any workflow stage.
+// Reuses the shared uploadDoc helper + a session client (storage RLS is
+// authenticated) and records the po_documents row under the actor's id.
+export async function uploadPoDocument(
+  poId: string,
+  formData: FormData
+): Promise<{ ok: boolean; error?: string }> {
+  const profile = await requireRole("SCM", "ADMIN", "ACCOUNTS", "FINANCE", "LOGISTICS");
+  if (!poId) return { ok: false, error: "Missing PO" };
+
+  const docTypeRaw = String(formData.get("doc_type") || "PO_PDF").trim() || "PO_PDF";
+  // Validate against the doc_type enum via the BUCKET map (its keys are the enum).
+  const docType = BUCKET[docTypeRaw] ? docTypeRaw : null;
+  if (!docType) return { ok: false, error: "Invalid document type" };
+
+  const file = formData.get("file");
+  if (!isFile(file)) return { ok: false, error: "A file is required" };
+
+  const supabase = await createClient();
+  const upErr = await uploadDoc(supabase, poId, docType, file, profile.id);
+  if (upErr) return { ok: false, error: upErr };
+
+  revalidatePath(`/purchase-orders/${poId}`);
+  return { ok: true };
 }
 
 // Generate short-lived signed URLs for a PO's documents (private buckets).
@@ -292,6 +395,9 @@ export async function savePurchaseOrder(formData: FormData): Promise<ActionResul
     );
     if (insErr) return { ok: false, error: `Failed to record product lines: ${insErr.message}` };
   }
+
+  // Keep the PO value in sync with its lines × per-supplier cost.
+  await recomputePoAmount(admin, poId);
 
   revalidatePath("/purchase-orders");
   revalidatePath(`/purchase-orders/${poId}`);
@@ -477,8 +583,8 @@ export async function markShipped(formData: FormData): Promise<ActionResult> {
   // the service-role client, gated by the canActOnState check above.
   const lines = parseShippingLines(formData);
   const expectedDate = actualEta || poRow?.targeted_eta || null;
+  const admin = createAdminClient();
   if (lines.length > 0 && expectedDate) {
-    const admin = createAdminClient();
     // Idempotent re-ship: clear any previously captured lines for this PO first.
     const { error: delErr } = await admin
       .from("incoming_stock")
@@ -500,6 +606,9 @@ export async function markShipped(formData: FormData): Promise<ActionResult> {
     );
     if (insErr) return { ok: false, error: `Failed to record shipping lines: ${insErr.message}` };
   }
+
+  // Keep the PO value in sync with its (possibly updated) shipping lines.
+  await recomputePoAmount(admin, poId);
 
   revalidatePath("/purchase-orders");
   revalidatePath(`/purchase-orders/${poId}`);
