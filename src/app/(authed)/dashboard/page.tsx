@@ -3,6 +3,7 @@ import { createClient, getCurrentUser } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { GroupedInventory, type ProductRow, type IncomingBuckets } from "@/components/grouped-inventory";
 import { WeekSelector } from "@/components/week-selector";
+import { PoReorderInsights } from "@/components/po-reorder-insights";
 
 const IDEAL = 1.5;
 
@@ -82,7 +83,7 @@ export default async function DashboardPage({
     // Incoming stock bucketed (status=EXPECTED only)
     supabase
       .from("incoming_stock")
-      .select("product_id, quantity, expected_date")
+      .select("product_id, quantity, expected_date, purchase_orders(po_number)")
       .eq("status", "EXPECTED"),
     // Last completed calendar month sales
     supabase
@@ -122,6 +123,26 @@ export default async function DashboardPage({
     }
     incomingMap[pid][bucket] += Number(row.quantity || 0);
   }
+
+  // Incoming PO lines per product (for the reorder/timing insights): qty + ETA + PO number.
+  const incomingLines: Record<string, { qty: number; eta: string | null; po: string | null }[]> = {};
+  for (const row of incomingRows ?? []) {
+    const pid = row.product_id as string;
+    (incomingLines[pid] ??= []).push({
+      qty: Number(row.quantity || 0),
+      eta: (row.expected_date as string) ?? null,
+      po: (row as any).purchase_orders?.po_number ?? null,
+    });
+  }
+  // Today in KL as YYYY-MM-DD for ETA math.
+  const todayISO = `${curYear}-${String(curMonth).padStart(2, "0")}-${String(nowKL.getDate()).padStart(2, "0")}`;
+  const reorderProducts = products.map((p) => ({
+    id: p.id,
+    sku: p.sku,
+    stock: Number(p.current_stock || 0),
+    ams: Number(p.ams_total || 0),
+    coverage: p.coverage_months != null ? Number(p.coverage_months) : null,
+  }));
 
   // Build last-month sales map: product_id → total units_equivalent
   const lastMonthSalesMap: Record<string, number> = {};
@@ -305,6 +326,23 @@ export default async function DashboardPage({
           empty="No ranges heavily overstocked."
         />
       </div>
+
+      {/* PO timing & reorder — expedite / delay / new PO */}
+      {canSeeValue && reorderProducts.length > 0 && (
+        <div className="space-y-2">
+          <h2 className="text-sm font-semibold text-gray-700">
+            PO timing &amp; reorder
+            <span className="ml-2 text-xs font-normal text-gray-400">
+              stock runway vs incoming PO ETAs
+            </span>
+          </h2>
+          <PoReorderInsights
+            products={reorderProducts}
+            incoming={incomingLines}
+            todayISO={todayISO}
+          />
+        </div>
+      )}
 
       {/* Weighted turnover by week — progress toward target */}
       {canSeeValue && weekTurnovers.some((w) => w.turnover != null) && (
