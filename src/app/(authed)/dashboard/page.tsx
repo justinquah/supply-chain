@@ -71,14 +71,12 @@ export default async function DashboardPage({
   // Use the as-of function so AMS reflects the 3 months ending at the selected month
   const [
     { data: rows },
-    { data: weekly },
     { data: incomingRows },
     { data: lastMonthRows },
   ] = await Promise.all([
     selWeek
       ? supabase.rpc("product_dashboard_asof_date", { p_date: selWeek })
       : Promise.resolve({ data: [] as any[] }),
-    supabase.from("inventory_weekly").select("*"),
     // Incoming stock bucketed (status=EXPECTED only)
     supabase
       .from("incoming_stock")
@@ -163,8 +161,6 @@ export default async function DashboardPage({
   // figure STAFF can see in place of the value-weighted turnover.
   const overallCoverage = totalAms > 0 ? totalStock / totalAms : null;
 
-  const weeks = weekly ?? [];
-  const latestWeek = weeks[weeks.length - 1];
 
   // Overstock threshold (months) — used by the weighted-turnover status/chart.
   const OVER = IDEAL * 2; // 3.0 mo = clearly overstocked
@@ -293,55 +289,6 @@ export default async function DashboardPage({
         </Card>
       )}
 
-      {/* Inventory level by week — value chart, hidden for STAFF */}
-      {canSeeValue && (
-      <Card>
-        <CardHeader className="flex-row items-center justify-between">
-          <CardTitle>Inventory level by week</CardTitle>
-          <span className="text-xs text-gray-500">
-            Upload stock each Monday
-          </span>
-        </CardHeader>
-        <CardContent>
-          {weeks.length === 0 ? (
-            <p className="text-sm text-gray-500 py-4">
-              No stock snapshots yet.
-            </p>
-          ) : (
-            <div className="flex items-end gap-4 flex-wrap">
-              {weeks.map((w: any) => {
-                const max = Math.max(
-                  ...weeks.map((x: any) => Number(x.inventory_value_myr))
-                );
-                const h = max > 0 ? (Number(w.inventory_value_myr) / max) * 80 : 0;
-                const d = new Date(w.week_start);
-                return (
-                  <div key={w.week_start} className="flex flex-col items-center gap-1">
-                    <div className="text-xs text-gray-600 tabular-nums">
-                      {rm(Number(w.inventory_value_myr))}
-                    </div>
-                    <div
-                      className="w-12 bg-brand rounded-t"
-                      style={{ height: `${Math.max(h, 4)}px` }}
-                    />
-                    <div className="text-[10px] text-gray-400">
-                      {MONTHS[d.getMonth() + 1]} {d.getDate()}
-                    </div>
-                  </div>
-                );
-              })}
-              {latestWeek && (
-                <div className="ml-4 text-sm text-gray-500 self-center">
-                  Latest: <b>{num(Number(latestWeek.total_units))}</b> units ·{" "}
-                  <b>{rm(Number(latestWeek.inventory_value_myr))}</b> ·{" "}
-                  {latestWeek.products_counted} products
-                </div>
-              )}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-      )}
 
       {/* Grouped inventory */}
       <Card>
