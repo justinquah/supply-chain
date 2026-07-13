@@ -178,6 +178,7 @@ export type ReceivingLine = {
   label: string;
   sku: string | null;
   quantity: number;
+  remark: string | null;
 };
 
 type Props = {
@@ -341,22 +342,23 @@ export function StageForms({
             </Field>
           </div>
 
-          {/* Per-line receiving — one row per incoming_stock line. */}
+          {/* Goods receipt (GRN) — one row per incoming_stock line. */}
           {receivingLines.length > 0 ? (
             <div className="space-y-2">
-              <span className="text-xs text-gray-500 block">
-                Per-line receiving (received / damaged / short / extra)
+              <span className="text-xs text-gray-500 block font-medium">
+                Goods receipt (GRN)
               </span>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-gray-500 border-b border-gray-200 text-[11px] uppercase tracking-wide">
                       <th className="py-1.5 pr-3 font-medium">Product</th>
-                      <th className="py-1.5 px-2 font-medium text-right">Exp</th>
+                      <th className="py-1.5 px-2 font-medium text-right">Expected</th>
                       <th className="py-1.5 px-2 font-medium">Received</th>
+                      <th className="py-1.5 px-2 font-medium">Extra</th>
+                      <th className="py-1.5 px-2 font-medium">Less</th>
                       <th className="py-1.5 px-2 font-medium">Damaged</th>
-                      <th className="py-1.5 px-2 font-medium">Short</th>
-                      <th className="py-1.5 pl-2 font-medium">Extra</th>
+                      <th className="py-1.5 pl-2 font-medium">Reason</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -385,7 +387,7 @@ export function StageForms({
                         </td>
                         <td className="py-1.5 px-2">
                           <input
-                            name="recv_damaged"
+                            name="recv_extra"
                             type="number"
                             min="0"
                             className={inputCls + " w-20"}
@@ -401,13 +403,22 @@ export function StageForms({
                             placeholder="0"
                           />
                         </td>
-                        <td className="py-1.5 pl-2">
+                        <td className="py-1.5 px-2">
                           <input
-                            name="recv_extra"
+                            name="recv_damaged"
                             type="number"
                             min="0"
                             className={inputCls + " w-20"}
                             placeholder="0"
+                          />
+                        </td>
+                        <td className="py-1.5 pl-2">
+                          <input
+                            name="recv_remark"
+                            type="text"
+                            defaultValue={line.remark ?? ""}
+                            className={inputCls + " min-w-[10rem]"}
+                            placeholder="reason"
                           />
                         </td>
                       </tr>
@@ -423,7 +434,7 @@ export function StageForms({
             </p>
           )}
 
-          <Field label="Remark">
+          <Field label="Remark (whole PO — optional)">
             <input name="remark" className={inputCls} placeholder="optional note" />
           </Field>
           <label className="block">
@@ -439,8 +450,8 @@ export function StageForms({
             />
           </label>
           <p className="text-xs text-gray-400">
-            Per-line quantities and remark are informational — they do not change
-            stock levels or KPI snapshots.
+            Received / Extra / Less / Damaged quantities and reasons are
+            informational — they do not change stock levels or KPI snapshots.
           </p>
           {blocked && (
             <p className="text-xs text-amber-700">

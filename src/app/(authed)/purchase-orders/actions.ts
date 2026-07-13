@@ -188,17 +188,19 @@ function parseProductLines(
   return lines;
 }
 
-// Parse the per-line receiving rows submitted by the receiving form. Each row
-// is keyed by its incoming_stock id (recv_line_id[]) with parallel
-// recv_received[] / recv_damaged[] / recv_short[] / recv_extra[] fields. A blank
-// numeric cell yields null (left untouched); a present value is coerced to a
-// non-negative integer (negatives clamp to 0).
+// Parse the per-line receiving rows submitted by the GRN receiving form. Each
+// row is keyed by its incoming_stock id (recv_line_id[]) with parallel
+// recv_received[] / recv_extra[] / recv_short[] (Less) / recv_damaged[] +
+// recv_remark[] (the discrepancy Reason) fields. A blank numeric cell yields
+// null (left untouched); a present value is coerced to a non-negative integer
+// (negatives clamp to 0). A blank reason yields null (source notes left as-is).
 type ReceivingLine = {
   id: string;
   received: number | null;
   damaged: number | null;
   short: number | null;
   extra: number | null;
+  remark: string | null;
 };
 function parseReceivingLines(formData: FormData): ReceivingLine[] {
   const ids = formData.getAll("recv_line_id").map((v) => String(v).trim());
@@ -206,6 +208,7 @@ function parseReceivingLines(formData: FormData): ReceivingLine[] {
   const damaged = formData.getAll("recv_damaged").map((v) => String(v).trim());
   const short = formData.getAll("recv_short").map((v) => String(v).trim());
   const extra = formData.getAll("recv_extra").map((v) => String(v).trim());
+  const remark = formData.getAll("recv_remark").map((v) => String(v).trim());
   const toInt = (raw: string | undefined): number | null => {
     if (raw == null || raw === "") return null;
     const n = Number(raw);
@@ -215,12 +218,14 @@ function parseReceivingLines(formData: FormData): ReceivingLine[] {
   const lines: ReceivingLine[] = [];
   for (let i = 0; i < ids.length; i++) {
     if (!ids[i]) continue;
+    const reason = remark[i] ?? "";
     lines.push({
       id: ids[i],
       received: toInt(received[i]),
       damaged: toInt(damaged[i]),
       short: toInt(short[i]),
       extra: toInt(extra[i]),
+      remark: reason === "" ? null : reason,
     });
   }
   return lines;
@@ -704,17 +709,23 @@ export async function markReceived(formData: FormData): Promise<ActionResult> {
     )
       sawAnyQty = true;
 
+    // Per-line write. qty_short = Less, qty_extra = Extra, qty_damaged = Damaged.
+    // The discrepancy reason overwrites notes only when supplied — a blank reason
+    // leaves the existing source label (e.g. "PO 123") untouched.
+    const lineUpdate: Record<string, unknown> = {
+      qty_received: line.received,
+      qty_damaged: line.damaged,
+      qty_short: line.short,
+      qty_extra: line.extra,
+      received_by: profile.id,
+      received_at: nowIso,
+      status: "ARRIVED",
+    };
+    if (line.remark) lineUpdate.notes = line.remark;
+
     const { error: updLineErr } = await admin
       .from("incoming_stock")
-      .update({
-        qty_received: line.received,
-        qty_damaged: line.damaged,
-        qty_short: line.short,
-        qty_extra: line.extra,
-        received_by: profile.id,
-        received_at: nowIso,
-        status: "ARRIVED",
-      })
+      .update(lineUpdate)
       .eq("id", line.id)
       .eq("po_id", poId);
     if (updLineErr)

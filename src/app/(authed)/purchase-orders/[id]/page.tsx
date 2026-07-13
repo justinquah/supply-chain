@@ -496,6 +496,7 @@ export default async function PurchaseOrderDetailPage({
                 })(),
                 sku: (r.product as { sku?: string } | null)?.sku ?? null,
                 quantity: r.quantity as number,
+                remark: (r.notes ?? null) as string | null,
               }))}
             />
           ) : (
