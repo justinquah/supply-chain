@@ -9,6 +9,7 @@ import { Stepper } from "./stepper";
 import { StageForms } from "./stage-forms";
 import { ShipmentForms } from "./shipment-forms";
 import { ReceiptProofLink } from "./receipt-proof-link";
+import { OceanFreightCell } from "./ocean-freight-cell";
 import {
   PO_WORKFLOW_COLORS,
   PO_WORKFLOW_LABELS,
@@ -76,7 +77,13 @@ export default async function PurchaseOrderDetailPage({
   const profile = await getCurrentUser();
   const role = profile?.role ?? "";
 
-  const [{ data: po }, { data: bal }, { data: products }, { data: incoming }] =
+  const [
+    { data: po },
+    { data: bal },
+    { data: products },
+    { data: incoming },
+    { data: fxRows },
+  ] =
     await Promise.all([
       supabase
         .from("purchase_orders")
@@ -86,6 +93,7 @@ export default async function PurchaseOrderDetailPage({
             "invoice_amount, invoice_number, invoice_date, targeted_eta, actual_eta, notes, created_at, " +
             "etd, supplier_eta, logistics_eta, eta_to_warehouse, clearance_status, eta_delayed, delay_reason, " +
             "container_arrived_at, unload_completed_at, received_qty, damaged_qty, receipt_remark, receipt_proof_path, " +
+            "ocean_freight_cost, ocean_freight_currency, " +
             "supplier:profiles!supplier_id(name, company_name), " +
             "po_documents(id, doc_type, file_path, file_name, uploaded_at)"
         )
@@ -113,9 +121,19 @@ export default async function PurchaseOrderDetailPage({
         )
         .eq("po_id", id)
         .order("expected_date"),
+      // FX to MYR for the landed-total conversion.
+      supabase.from("fx_rates").select("currency, rate_to_myr"),
     ]);
 
   if (!po) notFound();
+
+  // currency -> rate_to_myr; missing rate treated as 1 in the landed total.
+  const fxMap = new Map<string, number>();
+  for (const r of (fxRows ?? []) as any[]) {
+    const rate = Number(r.rate_to_myr);
+    if (Number.isFinite(rate)) fxMap.set(String(r.currency), rate);
+  }
+  const fx = (cur: string | null | undefined) => fxMap.get(String(cur)) ?? 1;
 
   const productOptions = (products ?? []).map((p: any) => ({
     id: p.id,

@@ -953,6 +953,59 @@ export async function setEtaDelayed(
   return { ok: true };
 }
 
+// updateOceanFreight — SCM/ADMIN/FINANCE/ACCOUNTS. Sets the ocean freight add-on
+// cost + its currency (usually USD). A null cost clears both fields. Routed
+// through the admin client so it works regardless of the actor's RLS (mirrors the
+// per-supplier cost writes). Revalidates the PO detail + finance + PO list where
+// the landed total is surfaced.
+const OCEAN_FREIGHT_CURRENCIES = ["MYR", "USD", "CNY", "THB"] as const;
+
+export async function updateOceanFreight(
+  poId: string,
+  cost: number | null,
+  currency: string | null
+): Promise<ActionResult> {
+  await requireRole("SCM", "ADMIN", "FINANCE", "ACCOUNTS");
+  if (!poId) return { ok: false, error: "Missing PO" };
+
+  // Clearing: a null/blank cost wipes both columns.
+  if (cost == null) {
+    const admin = createAdminClient();
+    const { error } = await admin
+      .from("purchase_orders")
+      .update({ ocean_freight_cost: null, ocean_freight_currency: null })
+      .eq("id", poId);
+    if (error) return { ok: false, error: error.message };
+    revalidatePath(`/purchase-orders/${poId}`);
+    revalidatePath("/purchase-orders");
+    revalidatePath("/finance");
+    return { ok: true };
+  }
+
+  if (!Number.isFinite(cost) || cost < 0)
+    return { ok: false, error: "Ocean freight cost must be a number ≥ 0" };
+
+  // Default to USD when a cost is given but no currency.
+  const cur = (currency || "USD").trim().toUpperCase();
+  if (!OCEAN_FREIGHT_CURRENCIES.includes(cur as never))
+    return { ok: false, error: "Currency must be one of MYR, USD, CNY, THB" };
+
+  const admin = createAdminClient();
+  const { error } = await admin
+    .from("purchase_orders")
+    .update({
+      ocean_freight_cost: Math.round(cost * 100) / 100,
+      ocean_freight_currency: cur,
+    })
+    .eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath(`/purchase-orders/${poId}`);
+  revalidatePath("/purchase-orders");
+  revalidatePath("/finance");
+  return { ok: true };
+}
+
 // updateActualPortArrival — LOGISTICS/SCM/ADMIN. Setting it re-anchors payment
 // (§5): the actual arrival is the highest-priority payment anchor.
 export async function updateActualPortArrival(poId: string, date: string | null): Promise<ActionResult> {
