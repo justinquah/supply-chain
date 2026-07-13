@@ -3,7 +3,6 @@ import { createClient, getCurrentUser } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { GroupedInventory, type ProductRow, type IncomingBuckets } from "@/components/grouped-inventory";
 import { WeekSelector } from "@/components/week-selector";
-import { PoReorderInsights } from "@/components/po-reorder-insights";
 
 const IDEAL = 1.5;
 
@@ -83,7 +82,7 @@ export default async function DashboardPage({
     // Incoming stock bucketed (status=EXPECTED only)
     supabase
       .from("incoming_stock")
-      .select("product_id, quantity, expected_date, purchase_orders(po_number)")
+      .select("product_id, quantity, expected_date")
       .eq("status", "EXPECTED"),
     // Last completed calendar month sales
     supabase
@@ -124,26 +123,6 @@ export default async function DashboardPage({
     incomingMap[pid][bucket] += Number(row.quantity || 0);
   }
 
-  // Incoming PO lines per product (for the reorder/timing insights): qty + ETA + PO number.
-  const incomingLines: Record<string, { qty: number; eta: string | null; po: string | null }[]> = {};
-  for (const row of incomingRows ?? []) {
-    const pid = row.product_id as string;
-    (incomingLines[pid] ??= []).push({
-      qty: Number(row.quantity || 0),
-      eta: (row.expected_date as string) ?? null,
-      po: (row as any).purchase_orders?.po_number ?? null,
-    });
-  }
-  // Today in KL as YYYY-MM-DD for ETA math.
-  const todayISO = `${curYear}-${String(curMonth).padStart(2, "0")}-${String(nowKL.getDate()).padStart(2, "0")}`;
-  const reorderProducts = products.map((p) => ({
-    id: p.id,
-    sku: p.sku,
-    stock: Number(p.current_stock || 0),
-    ams: Number(p.ams_total || 0),
-    coverage: p.coverage_months != null ? Number(p.coverage_months) : null,
-  }));
-
   // Build last-month sales map: product_id → total units_equivalent
   const lastMonthSalesMap: Record<string, number> = {};
   for (const row of lastMonthRows ?? []) {
@@ -165,11 +144,6 @@ export default async function DashboardPage({
     (s, p) => s + Number(p.inventory_value_myr || 0),
     0
   );
-  const monthlySalesValue = products.reduce(
-    (s, p) => s + Number(p.monthly_sales_value_myr || 0),
-    0
-  );
-
   // Value-weighted inventory turnover (coverage weighted by monthly sales value).
   let wNum = 0,
     wDen = 0;
@@ -188,21 +162,12 @@ export default async function DashboardPage({
   // Overall coverage (value-free) = total stock units / total AMS — the "turnover"
   // figure STAFF can see in place of the value-weighted turnover.
   const overallCoverage = totalAms > 0 ? totalStock / totalAms : null;
-  const atRisk = products.filter(
-    (p) => p.ams_total > 0 && p.coverage_months != null && Number(p.coverage_months) < IDEAL
-  ).length;
 
   const weeks = weekly ?? [];
   const latestWeek = weeks[weeks.length - 1];
 
-  // Action lists: what to replenish (below target) vs push (overstock).
+  // Overstock threshold (months) — used by the weighted-turnover status/chart.
   const OVER = IDEAL * 2; // 3.0 mo = clearly overstocked
-  const understock = products
-    .filter((p) => p.ams_total > 0 && p.coverage_months != null && Number(p.coverage_months) < IDEAL)
-    .sort((a, b) => Number(a.coverage_months) - Number(b.coverage_months));
-  const overstock = products
-    .filter((p) => p.ams_total > 0 && p.coverage_months != null && Number(p.coverage_months) > OVER)
-    .sort((a, b) => Number(b.coverage_months) - Number(a.coverage_months));
 
   // Weighted-turnover status (target IDEAL): red when clearly over/under.
   const turnoverOver = weightedTurnover != null && weightedTurnover > OVER;
@@ -269,11 +234,6 @@ export default async function DashboardPage({
               sub={turnoverSub}
               danger={turnoverDanger}
             />
-            <Kpi
-              label="Monthly sales value"
-              value={rm(monthlySalesValue)}
-              sub="at cost / month"
-            />
           </>
         ) : (
           <>
@@ -295,54 +255,7 @@ export default async function DashboardPage({
             />
           </>
         )}
-        <Kpi
-          label="Ranges below 1.5 mo"
-          value={num(atRisk)}
-          sub="products"
-          danger={atRisk > 0}
-        />
       </div>
-
-      {/* Action lists: replenish (below target) vs push sales (overstock) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <ActionList
-          title={`Replenish — below ${IDEAL} mo (${understock.length})`}
-          tone="bad"
-          hint="running low · order / expedite"
-          rows={understock.map((p) => ({
-            sku: p.sku,
-            right: `${num(Number(p.coverage_months), 1)} mo · ${num(Number(p.current_stock))} u`,
-          }))}
-          empty="Nothing below target."
-        />
-        <ActionList
-          title={`Push sales — overstock > ${OVER} mo (${overstock.length})`}
-          tone="warn"
-          hint="excess stock · promote / push harder"
-          rows={overstock.map((p) => ({
-            sku: p.sku,
-            right: `${num(Number(p.coverage_months), 1)} mo · ${num(Number(p.current_stock))} u`,
-          }))}
-          empty="No ranges heavily overstocked."
-        />
-      </div>
-
-      {/* PO timing & reorder — expedite / delay / new PO */}
-      {canSeeValue && reorderProducts.length > 0 && (
-        <div className="space-y-2">
-          <h2 className="text-sm font-semibold text-gray-700">
-            PO timing &amp; reorder
-            <span className="ml-2 text-xs font-normal text-gray-400">
-              stock runway vs incoming PO ETAs
-            </span>
-          </h2>
-          <PoReorderInsights
-            products={reorderProducts}
-            incoming={incomingLines}
-            todayISO={todayISO}
-          />
-        </div>
-      )}
 
       {/* Weighted turnover by week — progress toward target */}
       {canSeeValue && weekTurnovers.some((w) => w.turnover != null) && (
@@ -477,44 +390,6 @@ function Kpi({
         {value}
       </div>
       {sub && <div className="text-xs text-gray-400 mt-0.5">{sub}</div>}
-    </div>
-  );
-}
-
-function ActionList({
-  title,
-  tone,
-  hint,
-  rows,
-  empty,
-}: {
-  title: string;
-  tone: "bad" | "warn";
-  hint: string;
-  rows: { sku: string; right: string }[];
-  empty: string;
-}) {
-  const dot = tone === "bad" ? "bg-red-500" : "bg-amber-500";
-  const edge = tone === "bad" ? "border-l-red-400" : "border-l-amber-400";
-  return (
-    <div className={"rounded-lg border border-gray-200 border-l-4 p-3 " + edge}>
-      <div className="flex items-center gap-1.5">
-        <span className={"h-2 w-2 rounded-full " + dot} />
-        <div className="text-sm font-medium text-gray-800">{title}</div>
-      </div>
-      <div className="text-[11px] text-gray-400 mb-2 ml-3.5">{hint}</div>
-      {rows.length === 0 ? (
-        <p className="text-xs text-gray-400 py-1">{empty}</p>
-      ) : (
-        <ul className="divide-y divide-gray-100 max-h-64 overflow-y-auto">
-          {rows.map((r) => (
-            <li key={r.sku} className="flex items-center justify-between py-1.5 text-sm gap-3">
-              <span className="text-gray-700 font-mono text-xs truncate">{r.sku}</span>
-              <span className="text-gray-500 tabular-nums text-xs whitespace-nowrap">{r.right}</span>
-            </li>
-          ))}
-        </ul>
-      )}
     </div>
   );
 }

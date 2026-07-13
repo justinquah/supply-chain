@@ -12,6 +12,7 @@ const INTERNAL = ["SCM", "ADMIN", "ACCOUNTS", "FINANCE", "WAREHOUSE", "LOGISTICS
 // STAFF sees only Dashboard; SUPPLIER sees only "My Orders".
 const ALL_NAV: { href: string; label: string; roles: string[] }[] = [
   { href: "/dashboard", label: "Dashboard", roles: [...INTERNAL, "STAFF"] },
+  { href: "/insights", label: "Insights & Actions", roles: ["SCM", "ADMIN", "ACCOUNTS", "FINANCE", "WAREHOUSE", "LOGISTICS"] },
   { href: "/kpi", label: "KPIs", roles: INTERNAL },
   { href: "/sales", label: "Sales", roles: INTERNAL },
   {
