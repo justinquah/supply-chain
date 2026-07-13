@@ -2,6 +2,7 @@ import { createClient, getCurrentUser, requireRole } from "@/lib/supabase/server
 import { Card, CardContent } from "@/components/ui/card";
 import { LaunchDateCell } from "./launch-date-cell";
 import { PackFieldCell } from "./pack-field-cell";
+import { ShipmentFieldCell } from "./shipment-field-cell";
 import { CategoryCell, type CategoryOption } from "./category-cell";
 import { AddProductForm } from "./add-product-form";
 import { ImportProductsForm } from "./import-products-form";
@@ -30,7 +31,7 @@ export default async function ProductsPage({
   let query = supabase
     .from("products")
     .select(
-      "id, sku, name, product_family, variation, launch_date, is_main, is_active, unit_cost, cost_currency, units_per_carton, stock_pieces_per_unit, category_id, product_categories(name), product_suppliers(unit_cost, cost_currency, is_primary, profiles(name, company_name))"
+      "id, sku, name, product_family, variation, launch_date, is_main, is_active, unit_cost, cost_currency, units_per_carton, stock_pieces_per_unit, units_per_shipment, category_id, product_categories(name), product_suppliers(unit_cost, cost_currency, is_primary, profiles(name, company_name))"
     )
     .order("variation", { ascending: true });
   if (!showInactive) query = query.eq("is_active", true);
@@ -151,6 +152,12 @@ export default async function ProductsPage({
                       >
                         Stock pcs / unit
                       </th>
+                      <th
+                        className="py-2 px-3 font-medium text-right"
+                        title="One shipment's loading size (main units) — drives the 1-shipment new-PO suggestion"
+                      >
+                        Loading / shipment
+                      </th>
                       <th className="py-2 pr-4 pl-3 font-medium">Launch date</th>
                     </tr>
                   </thead>
@@ -237,6 +244,20 @@ export default async function ProductsPage({
                             ) : (
                               <span className="tabular-nums text-gray-600">
                                 {p.stock_pieces_per_unit ?? 1}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2 px-3 text-right">
+                            {canManage ? (
+                              <div className="flex justify-end">
+                                <ShipmentFieldCell
+                                  productId={p.id}
+                                  value={p.units_per_shipment ?? null}
+                                />
+                              </div>
+                            ) : (
+                              <span className="tabular-nums text-gray-600">
+                                {p.units_per_shipment ?? "—"}
                               </span>
                             )}
                           </td>

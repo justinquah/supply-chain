@@ -34,13 +34,42 @@ export default async function InsightsPage() {
     );
   }
 
-  const [{ data: rows }, { data: incomingRows }] = await Promise.all([
+  // Resolved timing actions within the last 21 days → move those PO tasks to
+  // the "Recently resolved" sub-section on the insights cards.
+  const resolvedCutoff = new Date(Date.now() - 21 * 86400000).toISOString();
+
+  const [
+    { data: rows },
+    { data: incomingRows },
+    { data: shipmentRows },
+    { data: timingRows },
+  ] = await Promise.all([
     supabase.rpc("product_dashboard_asof_date", { p_date: latestWeek }),
     supabase
       .from("incoming_stock")
-      .select("product_id, quantity, expected_date, purchase_orders(po_number)")
+      .select("product_id, quantity, expected_date, purchase_orders(id, po_number)")
       .eq("status", "EXPECTED"),
+    supabase.from("products").select("id, units_per_shipment"),
+    supabase
+      .from("po_timing_actions")
+      .select("po_id, action_type, resolved_at")
+      .eq("status", "resolved")
+      .gte("resolved_at", resolvedCutoff),
   ]);
+
+  const unitsPerShipmentById = new Map<string, number | null>();
+  for (const r of shipmentRows ?? []) {
+    const v = (r as any).units_per_shipment;
+    unitsPerShipmentById.set(String((r as any).id), v != null ? Number(v) : null);
+  }
+
+  const resolvedDelay = new Set<string>();
+  const resolvedExpedite = new Set<string>();
+  for (const r of timingRows ?? []) {
+    const poId = String((r as any).po_id);
+    if ((r as any).action_type === "delay") resolvedDelay.add(poId);
+    else if ((r as any).action_type === "expedite") resolvedExpedite.add(poId);
+  }
 
   const products = ((rows ?? []) as any[]).filter(
     (p) => p.is_main && p.is_active
@@ -65,14 +94,18 @@ export default async function InsightsPage() {
     .filter((p) => p.ams_total > 0 && p.coverage_months != null && Number(p.coverage_months) > OVER)
     .sort((a, b) => Number(b.coverage_months) - Number(a.coverage_months));
 
-  // Incoming PO lines per product (for the reorder/timing insights): qty + ETA + PO number.
-  const incomingLines: Record<string, { qty: number; eta: string | null; po: string | null }[]> = {};
+  // Incoming PO lines per product (for the reorder/timing insights): qty + ETA + PO id/number.
+  const incomingLines: Record<
+    string,
+    { qty: number; eta: string | null; po: string | null; poId: string | null }[]
+  > = {};
   for (const row of incomingRows ?? []) {
     const pid = row.product_id as string;
     (incomingLines[pid] ??= []).push({
       qty: Number(row.quantity || 0),
       eta: (row.expected_date as string) ?? null,
       po: (row as any).purchase_orders?.po_number ?? null,
+      poId: (row as any).purchase_orders?.id ?? null,
     });
   }
 
@@ -82,6 +115,7 @@ export default async function InsightsPage() {
     stock: Number(p.current_stock || 0),
     ams: Number(p.ams_total || 0),
     coverage: p.coverage_months != null ? Number(p.coverage_months) : null,
+    unitsPerShipment: unitsPerShipmentById.get(String(p.id)) ?? null,
   }));
 
   // Today in Asia/Kuala_Lumpur as YYYY-MM-DD for ETA math.
@@ -132,6 +166,8 @@ export default async function InsightsPage() {
           products={reorderProducts}
           incoming={incomingLines}
           todayISO={todayISO}
+          resolvedDelay={[...resolvedDelay]}
+          resolvedExpedite={[...resolvedExpedite]}
         />
       </div>
     </div>

@@ -1006,6 +1006,75 @@ export async function updateOceanFreight(
   return { ok: true };
 }
 
+// applyPoTiming — SCM/ADMIN accept (or override) a proposed delay/expedite ETA
+// from the Insights "Insights & Actions" tasks. Applies the chosen ETA to the
+// PO + its in-transit incoming lines (so the dashboard re-buckets by ETA),
+// records a resolved po_timing_actions row (so the task visibly moves to
+// "Recently resolved"), and revalidates the affected views. Writes route
+// through the service-role client (po_timing_actions + incoming_stock writes
+// are SCM/ADMIN); the requireRole above is the security boundary.
+export async function applyPoTiming(
+  poId: string,
+  actionType: "delay" | "expedite",
+  chosenEta: string
+): Promise<ActionResult> {
+  const profile = await requireRole("SCM", "ADMIN");
+
+  if (!poId) return { ok: false, error: "Missing PO" };
+  if (actionType !== "delay" && actionType !== "expedite")
+    return { ok: false, error: "Invalid action type" };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(chosenEta))
+    return { ok: false, error: "A valid date (YYYY-MM-DD) is required" };
+
+  const admin = createAdminClient();
+
+  // 1. Update the PO's ETA fields per the action taken.
+  //    delay  → push the warehouse ETA out + flag the delay.
+  //    expedite → pull the logistics ETA forward + clear the delay flag.
+  const poUpdate: Record<string, unknown> =
+    actionType === "delay"
+      ? {
+          eta_to_warehouse: chosenEta,
+          eta_delayed: true,
+          delay_reason: "SCM: delayed (overstock)",
+        }
+      : {
+          logistics_eta: chosenEta,
+          eta_delayed: false,
+        };
+  const { error: poErr } = await admin
+    .from("purchase_orders")
+    .update(poUpdate)
+    .eq("id", poId);
+  if (poErr) return { ok: false, error: poErr.message };
+
+  // 2. Re-date the PO's in-transit lines so the dashboard re-buckets by ETA.
+  const { error: incErr } = await admin
+    .from("incoming_stock")
+    .update({ expected_date: chosenEta })
+    .eq("po_id", poId)
+    .eq("status", "EXPECTED");
+  if (incErr) return { ok: false, error: incErr.message };
+
+  // 3. Record the resolved timing action (audit + drives "Recently resolved").
+  //    resolved_at is set explicitly so the page's 21-day recency filter matches.
+  const { error: actErr } = await admin.from("po_timing_actions").insert({
+    po_id: poId,
+    action_type: actionType,
+    chosen_eta: chosenEta,
+    status: "resolved",
+    resolved_by: profile.id,
+    resolved_at: new Date().toISOString(),
+    note: null,
+  });
+  if (actErr) return { ok: false, error: actErr.message };
+
+  revalidatePath("/insights");
+  revalidatePath("/dashboard");
+  revalidatePath(`/purchase-orders/${poId}`);
+  return { ok: true };
+}
+
 // updateActualPortArrival — LOGISTICS/SCM/ADMIN. Setting it re-anchors payment
 // (§5): the actual arrival is the highest-priority payment anchor.
 export async function updateActualPortArrival(poId: string, date: string | null): Promise<ActionResult> {

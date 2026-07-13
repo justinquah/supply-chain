@@ -126,6 +126,38 @@ export async function updateProductCategory(
   return { ok: true };
 }
 
+/**
+ * Update a product's units-per-shipment — one shipment's loading size (main
+ * units). Drives the Insights "Issue new PO" suggestion (order in whole
+ * shipments). Gated to SCM/ADMIN; writes via the admin client, same boundary as
+ * the other inline product edits. A null value clears it (no loading size);
+ * when set it must be > 0. Revalidates /insights since the reorder suggestion
+ * reads it.
+ */
+export async function updateUnitsPerShipment(
+  productId: string,
+  value: number | null
+): Promise<ActionResult> {
+  await requireRole("SCM", "ADMIN");
+
+  if (!productId) return { ok: false, error: "Missing product" };
+  if (value != null && (!Number.isFinite(value) || value <= 0)) {
+    return { ok: false, error: "Loading / shipment must be a number greater than 0" };
+  }
+
+  const adminClient = createAdminClient();
+  const { error } = await adminClient
+    .from("products")
+    .update({ units_per_shipment: value })
+    .eq("id", productId);
+
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/products");
+  revalidatePath("/insights");
+  return { ok: true };
+}
+
 const CURRENCY_CODES = ["MYR", "USD", "CNY", "THB"] as const;
 type CurrencyCode = (typeof CURRENCY_CODES)[number];
 
