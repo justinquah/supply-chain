@@ -88,8 +88,23 @@ export default async function KpiPage({
   );
   const kFys = [...(kFy ?? [])].sort((a: any, b: any) => a.fy - b.fy);
 
-  // ---- SCM Performance Score (composite, out of 100) ----
-  const latestKpiMonth = kMonths.length ? kMonths[kMonths.length - 1] : null;
+  // Selected period = latest available row for the chosen grain. The KPI engine
+  // already aggregates weekly→monthly (avg of the month's weekly uploads),
+  // monthly→quarterly (avg of monthly), and monthly→FY (avg of monthly).
+  let selKpi: any = null;
+  let selLabel = "—";
+  if (grain === "month" && kMonths.length) {
+    selKpi = kMonths[kMonths.length - 1];
+    selLabel = `${MONTHS[selKpi.cal_month]} ${selKpi.cal_year}`;
+  } else if (grain === "quarter" && kQtrs.length) {
+    selKpi = kQtrs[kQtrs.length - 1];
+    selLabel = `Q${selKpi.fy_q} ${selKpi.fy_label}`;
+  } else if (grain === "fy" && kFys.length) {
+    selKpi = kFys[kFys.length - 1];
+    selLabel = selKpi.fy_label;
+  }
+
+  // ---- SCM Performance Score (composite /100) — stock pillars from the SELECTED period ----
   const dashProducts = (dash ?? []) as any[];
   const incomingSet = new Set(((incomingExp ?? []) as any[]).map((r) => String(r.product_id)));
   const IDEAL_COV = 1.5;
@@ -114,29 +129,14 @@ export default async function KpiPage({
   }
 
   const scm = computeScmScore({
-    oosPct: latestKpiMonth?.oos_pct != null ? Number(latestKpiMonth.oos_pct) : null,
-    overstockPct: latestKpiMonth?.overstock_pct != null ? Number(latestKpiMonth.overstock_pct) : null,
-    healthyPct: latestKpiMonth?.healthy_pct != null ? Number(latestKpiMonth.healthy_pct) : null,
+    oosPct: selKpi?.oos_pct != null ? Number(selKpi.oos_pct) : null,
+    overstockPct: selKpi?.overstock_pct != null ? Number(selKpi.overstock_pct) : null,
+    healthyPct: selKpi?.healthy_pct != null ? Number(selKpi.healthy_pct) : null,
     lowStock,
     lowNoPo,
     overdue,
     overdueManaged,
   });
-  const scmMonthLabel = latestKpiMonth ? `${MONTHS[latestKpiMonth.cal_month]} ${latestKpiMonth.cal_year}` : "—";
-
-  // Selected period = latest available row for the chosen grain.
-  let selKpi: any = null;
-  let selLabel = "—";
-  if (grain === "month" && kMonths.length) {
-    selKpi = kMonths[kMonths.length - 1];
-    selLabel = `${MONTHS[selKpi.cal_month]} ${selKpi.cal_year}`;
-  } else if (grain === "quarter" && kQtrs.length) {
-    selKpi = kQtrs[kQtrs.length - 1];
-    selLabel = `Q${selKpi.fy_q} ${selKpi.fy_label}`;
-  } else if (grain === "fy" && kFys.length) {
-    selKpi = kFys[kFys.length - 1];
-    selLabel = selKpi.fy_label;
-  }
 
   // Drill-down: latest week's eligible classification.
   const snaps = kSnap ?? [];
@@ -210,8 +210,24 @@ export default async function KpiPage({
           <div>
             <CardTitle>SCM performance score</CardTitle>
             <p className="text-xs text-gray-500 mt-1">
-              Availability · Stock health · Capital efficiency · PO coordination · {scmMonthLabel}
+              Availability · Stock health · Capital efficiency · PO coordination · {selLabel}
             </p>
+          </div>
+          <div className="flex items-center gap-1 rounded-lg bg-gray-100 p-1 text-sm">
+            {(["month", "quarter", "fy"] as Grain[]).map((g) => (
+              <a
+                key={g}
+                href={`/kpi?g=${g}`}
+                className={
+                  "px-3 py-1 rounded-md capitalize " +
+                  (grain === g
+                    ? "bg-white shadow-sm font-medium text-gray-900"
+                    : "text-gray-500 hover:text-gray-800")
+                }
+              >
+                {g === "fy" ? "FY" : g}
+              </a>
+            ))}
           </div>
         </CardHeader>
         <CardContent>
@@ -245,9 +261,10 @@ export default async function KpiPage({
             </div>
           </div>
           <p className="text-[11px] text-gray-400 mt-3">
-            PO coordination = reorder discipline + managing overdue POs (ETA updated / flagged
-            Delayed) — not delivery delays outside the SCM&apos;s control. Improves as data is
-            cleaned and POs are received in-app.
+            Stock pillars = the {grain === "month" ? "month's" : grain === "quarter" ? "quarter's" : "FY's"} KPI
+            (month = avg of weekly uploads · quarter/FY = avg of monthly). PO coordination = reorder
+            discipline + managing overdue POs (ETA updated / flagged Delayed), shown at current state —
+            not delivery delays outside the SCM&apos;s control.
           </p>
         </CardContent>
       </Card>
