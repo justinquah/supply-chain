@@ -322,11 +322,11 @@ export default async function PurchaseOrderDetailPage({
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle>Documents</CardTitle>
           <span className="text-xs text-gray-500">
-            Green = uploaded (click to open) · grey = missing
+            Green = uploaded (click to open) · grey = click to upload
           </span>
         </CardHeader>
         <CardContent>
-          <DocBadges docs={docs} />
+          <DocBadges poId={poRow.id} docs={docs} canUpload={canUploadDoc} />
           {canUploadDoc && <DocUpload poId={poRow.id} />}
         </CardContent>
       </Card>

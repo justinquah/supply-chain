@@ -268,6 +268,7 @@ export async function uploadPoDocument(
   if (upErr) return { ok: false, error: upErr };
 
   revalidatePath(`/purchase-orders/${poId}`);
+  revalidatePath("/purchase-orders");
   return { ok: true };
 }
 

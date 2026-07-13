@@ -25,6 +25,7 @@ export default async function PurchaseOrdersPage() {
   const profile = await getCurrentUser();
   const role = profile?.role ?? "";
   const canDraft = PO_DRAFT_CREATORS.includes(role as never);
+  const canUploadDoc = (["SCM", "ADMIN", "ACCOUNTS", "FINANCE", "LOGISTICS"] as string[]).includes(role);
 
   const [{ data: pos }, { data: suppliers }, { data: groups }, { data: products }] =
     await Promise.all([
@@ -167,7 +168,11 @@ export default async function PurchaseOrdersPage() {
                         {po.product_group || "—"}
                       </td>
                       <td className="py-2.5 pr-4 pl-3">
-                        <DocBadges docs={po.po_documents || []} />
+                        <DocBadges
+                          poId={po.id}
+                          docs={po.po_documents || []}
+                          canUpload={canUploadDoc}
+                        />
                       </td>
                     </tr>
                   );
