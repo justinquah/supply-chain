@@ -1,7 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { createClient, getCurrentUser } from "@/lib/supabase/server";
+import { createClient, getCurrentUser, requireRole } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 type ActionResult = { ok: boolean; error?: string };
 
@@ -201,4 +202,107 @@ export async function getSlipUrl(filePath: string): Promise<string | null> {
   const path = filePath.slice(slashIdx + 1);
   const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 300);
   return data?.signedUrl ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Standalone bank financing obligations (Banker's Acceptance + Invoice Financing)
+// Table: financing_obligations. RLS read+write = SCM/ADMIN/ACCOUNTS/FINANCE.
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a new standalone financing obligation (BA or Invoice Financing).
+ * Gated to SCM/ADMIN/ACCOUNTS/FINANCE.
+ */
+export async function addFinancingObligation(
+  formData: FormData
+): Promise<ActionResult> {
+  const profile = await requireRole("SCM", "ADMIN", "ACCOUNTS", "FINANCE");
+
+  const kind = String(formData.get("kind") || "").trim();
+  if (kind !== "BA" && kind !== "INVOICE_FINANCING")
+    return { ok: false, error: "Kind must be BA or Invoice Financing" };
+
+  const amountRaw = formData.get("amount");
+  const amount = amountRaw ? Number(amountRaw) : NaN;
+  if (Number.isNaN(amount) || amount <= 0)
+    return { ok: false, error: "Amount must be a positive number" };
+
+  const dueDate = String(formData.get("due_date") || "").trim();
+  if (!dueDate) return { ok: false, error: "Due date is required" };
+
+  const reference = String(formData.get("reference") || "").trim() || null;
+  const bank = String(formData.get("bank") || "").trim() || null;
+  const currency = String(formData.get("currency") || "MYR").trim() || "MYR";
+  const notes = String(formData.get("notes") || "").trim() || null;
+
+  const admin = createAdminClient();
+  const { error } = await admin.from("financing_obligations").insert({
+    kind,
+    reference,
+    bank,
+    amount,
+    currency,
+    due_date: dueDate,
+    status: "PENDING" as const,
+    notes,
+    created_by: profile.id,
+  });
+
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/finance");
+  return { ok: true };
+}
+
+/** Mark a financing obligation as PAID (records paid_at = now). */
+export async function markFinancingPaid(id: string): Promise<ActionResult> {
+  await requireRole("SCM", "ADMIN", "ACCOUNTS", "FINANCE");
+  if (!id) return { ok: false, error: "Missing id" };
+
+  const admin = createAdminClient();
+  const { error } = await admin
+    .from("financing_obligations")
+    .update({ status: "PAID", paid_at: new Date().toISOString() })
+    .eq("id", id);
+
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/finance");
+  return { ok: true };
+}
+
+/** Undo a PAID financing obligation back to PENDING (clears paid_at). */
+export async function unmarkFinancingPaid(id: string): Promise<ActionResult> {
+  await requireRole("SCM", "ADMIN", "ACCOUNTS", "FINANCE");
+  if (!id) return { ok: false, error: "Missing id" };
+
+  const admin = createAdminClient();
+  const { error } = await admin
+    .from("financing_obligations")
+    .update({ status: "PENDING", paid_at: null })
+    .eq("id", id);
+
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/finance");
+  return { ok: true };
+}
+
+/** Delete a financing obligation row. */
+export async function deleteFinancingObligation(
+  id: string
+): Promise<ActionResult> {
+  await requireRole("SCM", "ADMIN", "ACCOUNTS", "FINANCE");
+  if (!id) return { ok: false, error: "Missing id" };
+
+  const admin = createAdminClient();
+  const { error } = await admin
+    .from("financing_obligations")
+    .delete()
+    .eq("id", id);
+
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/finance");
+  return { ok: true };
 }

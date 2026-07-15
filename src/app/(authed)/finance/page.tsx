@@ -3,9 +3,19 @@ import { createClient, requireRole } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCurrency } from "@/lib/constants";
 import { RecordPaymentForm } from "./record-payment-form";
-import { PaymentCalendar, type PaidEntry, type DueEntry, type BaEntry } from "./payment-calendar";
+import {
+  PaymentCalendar,
+  type PaidEntry,
+  type DueEntry,
+  type BaEntry,
+  type FinancingEntry,
+} from "./payment-calendar";
 import { getSlipUrl } from "./actions";
 import { EditBaTermsFormWrapper } from "./edit-ba-wrapper";
+import {
+  FinancingObligations,
+  type FinancingObligationRow,
+} from "./financing-obligations";
 
 // ---------------------------------------------------------------------------
 // Money helpers
@@ -69,28 +79,51 @@ export default async function FinancePage() {
   const supabase = await createClient();
 
   // (a) Finance inbox: POs with outstanding balance + (c) calendar data
-  const [{ data: posRaw }, { data: balancesRaw }, { data: paymentsRaw }] =
-    await Promise.all([
-      supabase
-        .from("purchase_orders")
-        .select(
-          "id, po_number, invoice_currency, deposit_percent, payment_terms, " +
-            "deposit_due_date, balance_due_date, actual_eta, targeted_eta, " +
-            "supplier:profiles!supplier_id(name, company_name)"
-        )
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("v_po_balance")
-        .select("po_id, total_amount, amount_paid, balance_remaining"),
-      supabase
-        .from("payments")
-        .select(
-          "id, po_id, amount, currency, paid_at, due_date, notes, payment_slip_path, " +
-            "payment_method, ba_term_days, ba_due_date"
-        )
-        .eq("status", "PAID")
-        .order("paid_at", { ascending: false }),
-    ]);
+  const [
+    { data: posRaw },
+    { data: balancesRaw },
+    { data: paymentsRaw },
+    { data: fxRows },
+    { data: financingRaw },
+  ] = await Promise.all([
+    supabase
+      .from("purchase_orders")
+      .select(
+        "id, po_number, invoice_currency, deposit_percent, payment_terms, " +
+          "deposit_due_date, balance_due_date, actual_eta, targeted_eta, " +
+          "supplier:profiles!supplier_id(name, company_name)"
+      )
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("v_po_balance")
+      .select("po_id, total_amount, amount_paid, balance_remaining"),
+    supabase
+      .from("payments")
+      .select(
+        "id, po_id, amount, currency, paid_at, due_date, notes, payment_slip_path, " +
+          "payment_method, ba_term_days, ba_due_date"
+      )
+      .eq("status", "PAID")
+      .order("paid_at", { ascending: false }),
+    // FX rates (currency -> rate_to_myr) for MYR-estimate calendar conversion.
+    supabase.from("fx_rates").select("currency, rate_to_myr"),
+    // Standalone bank financing obligations (BA + Invoice Financing).
+    supabase
+      .from("financing_obligations")
+      .select(
+        "id, kind, reference, bank, amount, currency, due_date, status, paid_at, notes"
+      )
+      .order("due_date", { ascending: true }),
+  ]);
+
+  // currency -> rate_to_myr; missing rate treated as 1 (best-effort estimate).
+  const fxMap = new Map<string, number>();
+  for (const r of (fxRows ?? []) as any[]) {
+    const rate = Number(r.rate_to_myr);
+    if (Number.isFinite(rate)) fxMap.set(String(r.currency), rate);
+  }
+  const toMyr = (amount: number, cur: string | null | undefined): number =>
+    Number(amount) * (fxMap.get(String(cur ?? "MYR")) ?? 1);
 
   const pos = (posRaw ?? []) as any[];
   const balances = (balancesRaw ?? []) as {
@@ -152,6 +185,7 @@ export default async function FinancePage() {
     .map((p) => ({
       date: toKlDate(p.paid_at)!,
       amount: Number(p.amount),
+      amountMyr: toMyr(Number(p.amount), p.currency),
       currency: p.currency ?? "MYR",
       poId: p.po_id,
       poNumber: poMap.get(p.po_id)?.po_number ?? null,
@@ -169,6 +203,7 @@ export default async function FinancePage() {
     const depositPct = Number(po.deposit_percent ?? 0);
     const depositAmount = Math.round((totalAmount * depositPct) / 100 * 100) / 100;
     const balanceAmount = Math.round((totalAmount - depositAmount) * 100) / 100;
+    const poCurrency = po.invoice_currency || "MYR";
 
     // Deposit leg: unpaid when amount_paid < deposit_amount
     if (
@@ -179,6 +214,7 @@ export default async function FinancePage() {
       dueEntries.push({
         date: po.deposit_due_date,
         amount: depositAmount,
+        amountMyr: toMyr(depositAmount, poCurrency),
         leg: "DEPOSIT",
         poId: po.id,
         poNumber: po.po_number ?? null,
@@ -194,6 +230,7 @@ export default async function FinancePage() {
       dueEntries.push({
         date: po.balance_due_date,
         amount: balanceAmount,
+        amountMyr: toMyr(balanceAmount, poCurrency),
         leg: "BALANCE",
         poId: po.id,
         poNumber: po.po_number ?? null,
@@ -213,6 +250,7 @@ export default async function FinancePage() {
       return {
         date: p.ba_due_date!,
         amount: Number(p.amount),
+        amountMyr: toMyr(Number(p.amount), p.currency),
         currency: p.currency ?? "MYR",
         poId: p.po_id,
         poNumber: poMap.get(p.po_id)?.po_number ?? null,
@@ -224,6 +262,27 @@ export default async function FinancePage() {
   // Upcoming BA list: ba_due_date >= today, sorted by date
   const upcomingBas = baEntries
     .filter((e) => e.daysUntil >= 0)
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  // (d) Standalone financing obligations (BA + Invoice Financing)
+  const financingRows = (financingRaw ?? []) as FinancingObligationRow[];
+
+  // Calendar entries: all PENDING obligations (financing amounts are already MYR).
+  const financingEntries: FinancingEntry[] = financingRows
+    .filter((f) => f.status === "PENDING" && f.due_date)
+    .map((f) => ({
+      date: toKlDate(f.due_date)!,
+      amount: Number(f.amount),
+      amountMyr: toMyr(Number(f.amount), f.currency),
+      kind: f.kind,
+      reference: f.reference,
+      bank: f.bank,
+      currency: f.currency ?? "MYR",
+    }));
+
+  // Upcoming financing list: pending, due_date >= today, sorted by date.
+  const upcomingFinancing: FinancingEntry[] = financingEntries
+    .filter((e) => e.date >= todayIso)
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
   // Generate signed URLs for payment slips (only for slips that exist)
@@ -250,6 +309,46 @@ export default async function FinancePage() {
           )}
         </p>
       </div>
+
+      {/* (c) Payment calendar — first thing Finance sees */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Payment calendar</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <PaymentCalendar
+            paidEntries={paidEntries}
+            dueEntries={dueEntries}
+            baEntries={baEntries}
+            upcomingBas={upcomingBas}
+            financingEntries={financingEntries}
+            upcomingFinancing={upcomingFinancing}
+            initialYear={klYear}
+            initialMonth={klMonth}
+            todayKl={todayIso}
+          />
+        </CardContent>
+      </Card>
+
+      {/* (d) Financing obligations (BA / Invoice Financing) */}
+      <Card>
+        <CardHeader>
+          <CardTitle>
+            Financing obligations (BA / Invoice Financing)
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FinancingObligations
+            obligations={financingRows}
+            canManage={
+              profile.role === "SCM" ||
+              profile.role === "ADMIN" ||
+              profile.role === "ACCOUNTS" ||
+              profile.role === "FINANCE"
+            }
+          />
+        </CardContent>
+      </Card>
 
       {/* (a) Finance inbox */}
       <Card>
@@ -454,23 +553,6 @@ export default async function FinancePage() {
         </CardContent>
       </Card>
 
-      {/* (c) Payment calendar */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Payment calendar</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <PaymentCalendar
-            paidEntries={paidEntries}
-            dueEntries={dueEntries}
-            baEntries={baEntries}
-            upcomingBas={upcomingBas}
-            initialYear={klYear}
-            initialMonth={klMonth}
-            todayKl={todayIso}
-          />
-        </CardContent>
-      </Card>
     </div>
   );
 }

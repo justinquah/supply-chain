@@ -10,6 +10,7 @@ import { formatCurrency } from "@/lib/constants";
 export type PaidEntry = {
   date: string; // "YYYY-MM-DD" in Asia/KL — BANK_BALANCE payments on their paid_at
   amount: number;
+  amountMyr: number; // MYR-equivalent estimate (amount × rate_to_myr)
   currency: string;
   poId: string;
   poNumber: string | null;
@@ -18,6 +19,7 @@ export type PaidEntry = {
 export type DueEntry = {
   date: string; // "YYYY-MM-DD" in Asia/KL
   amount: number;
+  amountMyr: number; // MYR-equivalent estimate
   leg: "DEPOSIT" | "BALANCE";
   poId: string;
   poNumber: string | null;
@@ -26,11 +28,22 @@ export type DueEntry = {
 export type BaEntry = {
   date: string; // "YYYY-MM-DD" in Asia/KL — ba_due_date
   amount: number;
+  amountMyr: number; // MYR-equivalent estimate
   currency: string;
   poId: string;
   poNumber: string | null;
   paymentId: string;
   daysUntil: number; // computed from today
+};
+
+export type FinancingEntry = {
+  date: string; // "YYYY-MM-DD" due_date
+  amount: number;
+  amountMyr: number; // MYR-equivalent estimate (financing is already MYR → ×1)
+  kind: "BA" | "INVOICE_FINANCING";
+  reference: string | null;
+  bank: string | null;
+  currency: string;
 };
 
 type Props = {
@@ -39,6 +52,10 @@ type Props = {
   baEntries: BaEntry[];
   /** All upcoming BAs (ba_due_date >= today), sorted by date, for the list. */
   upcomingBas: BaEntry[];
+  /** All pending financing obligations, for the calendar dots/day totals. */
+  financingEntries: FinancingEntry[];
+  /** Pending financing due_date >= today, sorted, for the list. */
+  upcomingFinancing: FinancingEntry[];
   /** Initial year (today's year in KL). */
   initialYear: number;
   /** Initial month (0-indexed, today's month in KL). */
@@ -65,11 +82,32 @@ function fmtDate(d: string) {
   });
 }
 
+// MYR-estimate formatter (no currency prefix — caller labels "MYR est.")
+function myrEst(n: number): string {
+  return `RM ${n.toLocaleString("en-MY", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })} est.`;
+}
+
+// Friendly kind label for a financing obligation.
+function financingKindLabel(kind: "BA" | "INVOICE_FINANCING"): string {
+  return kind === "BA" ? "BA" : "IF";
+}
+
+// Short calendar marker label, e.g. "IF010 · Maybank" or "BA · UOB".
+function financingMarker(e: FinancingEntry): string {
+  const lead = e.reference || financingKindLabel(e.kind);
+  return e.bank ? `${lead} · ${e.bank}` : lead;
+}
+
 export function PaymentCalendar({
   paidEntries,
   dueEntries,
   baEntries,
   upcomingBas,
+  financingEntries,
+  upcomingFinancing,
   initialYear,
   initialMonth,
   todayKl,
@@ -86,14 +124,16 @@ export function PaymentCalendar({
     else setMonth(m => m + 1);
   }
 
-  // Build index maps for current month
+  // Build index maps for current month. Month totals are in MYR estimate.
   const paidByDay = new Map<string, PaidEntry[]>();
   const dueByDay = new Map<string, DueEntry[]>();
   const baByDay = new Map<string, BaEntry[]>();
+  const financingByDay = new Map<string, FinancingEntry[]>();
 
-  let monthTotalPaid = 0;
-  let monthTotalDue = 0;
-  let monthTotalBa = 0;
+  let monthTotalPaid = 0; // MYR est.
+  let monthTotalDue = 0; // MYR est.
+  let monthTotalBa = 0; // MYR est.
+  let monthTotalFinancing = 0; // MYR est.
 
   for (const e of paidEntries) {
     const [ey, em] = e.date.split("-").map(Number);
@@ -101,7 +141,7 @@ export function PaymentCalendar({
       const arr = paidByDay.get(e.date) ?? [];
       arr.push(e);
       paidByDay.set(e.date, arr);
-      monthTotalPaid += e.amount;
+      monthTotalPaid += e.amountMyr;
     }
   }
   for (const e of dueEntries) {
@@ -110,7 +150,7 @@ export function PaymentCalendar({
       const arr = dueByDay.get(e.date) ?? [];
       arr.push(e);
       dueByDay.set(e.date, arr);
-      monthTotalDue += e.amount;
+      monthTotalDue += e.amountMyr;
     }
   }
   for (const e of baEntries) {
@@ -119,9 +159,21 @@ export function PaymentCalendar({
       const arr = baByDay.get(e.date) ?? [];
       arr.push(e);
       baByDay.set(e.date, arr);
-      monthTotalBa += e.amount;
+      monthTotalBa += e.amountMyr;
     }
   }
+  for (const e of financingEntries) {
+    const [ey, em] = e.date.split("-").map(Number);
+    if (ey === year && em === month + 1) {
+      const arr = financingByDay.get(e.date) ?? [];
+      arr.push(e);
+      financingByDay.set(e.date, arr);
+      monthTotalFinancing += e.amountMyr;
+    }
+  }
+
+  // Total upcoming outflows for the visible month (MYR est.) = due + BA + financing.
+  const monthTotalUpcoming = monthTotalDue + monthTotalBa + monthTotalFinancing;
 
   // Calendar grid
   const firstDay = new Date(year, month, 1).getDay(); // 0 = Sun
@@ -157,28 +209,48 @@ export function PaymentCalendar({
         </button>
       </div>
 
-      {/* Month summary */}
+      {/* Month summary — all totals are MYR estimates (mixed-currency converted). */}
       <div className="flex flex-wrap gap-4 text-sm">
         <span className="flex items-center gap-1.5">
           <span className="h-3 w-3 rounded-full bg-emerald-500 inline-block" />
           <span className="text-gray-600">Paid this month:</span>
           <span className="font-semibold text-emerald-700 tabular-nums">
-            {formatCurrency(monthTotalPaid)}
+            {myrEst(monthTotalPaid)}
           </span>
         </span>
         <span className="flex items-center gap-1.5">
           <span className="h-3 w-3 rounded-full bg-amber-400 inline-block" />
           <span className="text-gray-600">To be paid:</span>
           <span className="font-semibold text-amber-700 tabular-nums">
-            {formatCurrency(monthTotalDue)}
+            {myrEst(monthTotalDue)}
           </span>
         </span>
         <span className="flex items-center gap-1.5">
           <span className="h-3 w-3 rounded-full bg-blue-500 inline-block" />
           <span className="text-gray-600">BA settling:</span>
           <span className="font-semibold text-blue-700 tabular-nums">
-            {formatCurrency(monthTotalBa)}
+            {myrEst(monthTotalBa)}
           </span>
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-3 w-3 rounded-full bg-indigo-500 inline-block" />
+          <span className="text-gray-600">Financing (BA/IF):</span>
+          <span className="font-semibold text-indigo-700 tabular-nums">
+            {myrEst(monthTotalFinancing)}
+          </span>
+        </span>
+      </div>
+
+      {/* Total upcoming outflows for the visible month (MYR est.) */}
+      <div className="rounded-md bg-gray-50 border border-gray-200 px-3 py-2 text-sm flex flex-wrap items-center gap-2">
+        <span className="text-gray-600 font-medium">
+          Total upcoming this month (due + BA + financing):
+        </span>
+        <span className="font-semibold text-gray-900 tabular-nums">
+          {myrEst(monthTotalUpcoming)}
+        </span>
+        <span className="text-xs text-gray-400">
+          MYR estimate — foreign amounts converted at current FX.
         </span>
       </div>
 
@@ -204,15 +276,25 @@ export function PaymentCalendar({
           const paid = paidByDay.get(key);
           const due = dueByDay.get(key);
           const ba = baByDay.get(key);
+          const financing = financingByDay.get(key);
           const hasPaid = paid && paid.length > 0;
           const hasDue = due && due.length > 0;
           const hasBa = ba && ba.length > 0;
+          const hasFinancing = financing && financing.length > 0;
           const isToday = key === todayKl;
 
-          // Ring colour: paid > ba > due
+          // Per-day upcoming outflow total (MYR est.) = due + BA + financing.
+          const dayUpcomingMyr =
+            (due?.reduce((s, e) => s + e.amountMyr, 0) ?? 0) +
+            (ba?.reduce((s, e) => s + e.amountMyr, 0) ?? 0) +
+            (financing?.reduce((s, e) => s + e.amountMyr, 0) ?? 0);
+          const hasUpcoming = hasDue || hasBa || hasFinancing;
+
+          // Ring colour: paid > financing > ba > due
           let ringCls = "";
-          if (hasPaid || hasDue || hasBa) {
+          if (hasPaid || hasDue || hasBa || hasFinancing) {
             if (hasPaid) ringCls = "ring-1 ring-inset ring-emerald-200";
+            else if (hasFinancing) ringCls = "ring-1 ring-inset ring-indigo-200";
             else if (hasBa) ringCls = "ring-1 ring-inset ring-blue-200";
             else if (hasDue) ringCls = "ring-1 ring-inset ring-amber-200";
           }
@@ -294,6 +376,29 @@ export function PaymentCalendar({
                   </div>
                 </div>
               ))}
+
+              {/* Financing (BA / Invoice Financing) — indigo */}
+              {financing?.map((e, i) => (
+                <div
+                  key={`fin-${i}`}
+                  className="rounded px-1 py-0.5 mb-0.5 bg-indigo-50 text-indigo-800 leading-tight"
+                >
+                  <div className="font-medium tabular-nums">
+                    {e.currency !== "MYR" ? `${e.currency} ` : ""}
+                    {formatCurrency(e.amount).replace("RM ", "")}
+                  </div>
+                  <div className="opacity-70 truncate" title={financingMarker(e)}>
+                    {financingMarker(e)}
+                  </div>
+                </div>
+              ))}
+
+              {/* Per-day upcoming total (MYR est.) */}
+              {hasUpcoming && (
+                <div className="mt-0.5 pt-0.5 border-t border-gray-100 text-[10px] font-semibold text-gray-600 tabular-nums">
+                  {myrEst(dayUpcomingMyr)}
+                </div>
+              )}
             </div>
           );
         })}
@@ -312,6 +417,10 @@ export function PaymentCalendar({
         <span className="flex items-center gap-1">
           <span className="h-2.5 w-2.5 rounded bg-blue-50 border border-blue-300 inline-block" />
           BA settling (blue)
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="h-2.5 w-2.5 rounded bg-indigo-50 border border-indigo-300 inline-block" />
+          Financing — BA / Invoice Financing (indigo)
         </span>
       </div>
 
@@ -370,6 +479,53 @@ export function PaymentCalendar({
                           {e.daysUntil}d
                         </span>
                       )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Upcoming financing (BA / Invoice Financing) list */}
+      {upcomingFinancing.length > 0 && (
+        <div className="mt-4">
+          <h3 className="text-sm font-semibold text-gray-900 mb-3">
+            Upcoming financing (BA / Invoice Financing) ({upcomingFinancing.length})
+          </h3>
+          <div className="rounded-lg border border-indigo-200 overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-indigo-50 text-left text-gray-600 text-xs">
+                  <th className="py-2 pl-3 pr-2 font-medium">Due date</th>
+                  <th className="py-2 px-2 font-medium">Kind</th>
+                  <th className="py-2 px-2 font-medium">Reference</th>
+                  <th className="py-2 px-2 font-medium">Bank</th>
+                  <th className="py-2 pl-2 pr-3 font-medium text-right">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {upcomingFinancing.map((e, i) => (
+                  <tr
+                    key={`${e.reference ?? "fin"}-${e.date}-${i}`}
+                    className="border-t border-indigo-100 hover:bg-indigo-50/50"
+                  >
+                    <td className="py-2 pl-3 pr-2 text-gray-700">
+                      {fmtDate(e.date)}
+                    </td>
+                    <td className="py-2 px-2">
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 font-medium">
+                        {e.kind === "BA" ? "Banker's Acceptance" : "Invoice Financing"}
+                      </span>
+                    </td>
+                    <td className="py-2 px-2 font-medium text-gray-800">
+                      {e.reference || "—"}
+                    </td>
+                    <td className="py-2 px-2 text-gray-600">{e.bank || "—"}</td>
+                    <td className="py-2 pl-2 pr-3 tabular-nums text-indigo-800 text-right">
+                      {e.currency !== "MYR" ? `${e.currency} ` : ""}
+                      {formatCurrency(e.amount)}
                     </td>
                   </tr>
                 ))}
