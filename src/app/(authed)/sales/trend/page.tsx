@@ -24,7 +24,7 @@ export default async function SalesTrendPage({
 }: {
   searchParams: Promise<{ c?: string }>;
 }) {
-  await requireRole("SCM", "ACCOUNTS", "FINANCE", "ADMIN");
+  await requireRole("SCM", "ADMIN");
   const supabase = await createClient();
   const sp = await searchParams;
   const channel = parseChannel(sp.c);

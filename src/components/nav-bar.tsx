@@ -7,18 +7,21 @@ import { cn } from "@/lib/utils";
 
 // Internal roles = everyone except STAFF and SUPPLIER.
 const INTERNAL = ["SCM", "ADMIN", "ACCOUNTS", "FINANCE", "WAREHOUSE", "LOGISTICS"];
+// Operations roles = internal minus the Finance tier (Finance/Accounts see only
+// Finance, PO & Invoices and Products).
+const OPS = ["SCM", "ADMIN", "WAREHOUSE", "LOGISTICS"];
 
 // Every nav item declares an explicit allow-list (no more `roles: null`).
 // STAFF sees only Dashboard; SUPPLIER sees only "My Orders".
 const ALL_NAV: { href: string; label: string; roles: string[] }[] = [
-  { href: "/dashboard", label: "Dashboard", roles: [...INTERNAL, "STAFF"] },
-  { href: "/insights", label: "Insights & Actions", roles: ["SCM", "ADMIN", "ACCOUNTS", "FINANCE", "WAREHOUSE", "LOGISTICS"] },
-  { href: "/kpi", label: "KPIs", roles: INTERNAL },
-  { href: "/sales", label: "Sales", roles: INTERNAL },
+  { href: "/dashboard", label: "Dashboard", roles: [...OPS, "STAFF"] },
+  { href: "/insights", label: "Insights & Actions", roles: OPS },
+  { href: "/kpi", label: "KPIs", roles: OPS },
+  { href: "/sales", label: "Sales", roles: OPS },
   {
     href: "/sales/trend",
     label: "Sales Trend",
-    roles: ["SCM", "ACCOUNTS", "FINANCE", "ADMIN"],
+    roles: ["SCM", "ADMIN"],
   },
   { href: "/purchase-orders", label: "PO & Invoices", roles: INTERNAL },
   {
@@ -35,7 +38,7 @@ const ALL_NAV: { href: string; label: string; roles: string[] }[] = [
   { href: "/suppliers", label: "Suppliers", roles: ["SCM", "ADMIN"] },
   { href: "/development", label: "Development", roles: ["SCM", "ADMIN"] },
   { href: "/permits", label: "Permits", roles: ["SCM", "ADMIN"] },
-  { href: "/stock", label: "Stock Levels", roles: INTERNAL },
+  { href: "/stock", label: "Stock Levels", roles: OPS },
   { href: "/supplier", label: "My Orders", roles: ["SUPPLIER", "SCM", "ADMIN"] },
   { href: "/settings", label: "Settings", roles: ["ADMIN", "SCM"] },
 ];

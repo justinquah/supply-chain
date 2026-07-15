@@ -25,6 +25,9 @@ export default async function DashboardPage({
   // SUPPLIER users have no inventory dashboard — send them to their portal.
   const me = await getCurrentUser();
   if (me?.role === "SUPPLIER") redirect("/supplier");
+  // Finance tier (Finance/Accounts) sees only Finance, PO & Invoices, Products —
+  // their home is the Finance page, not the operations dashboard.
+  if (me?.role === "FINANCE" || me?.role === "ACCOUNTS") redirect("/finance");
   // STAFF gets a restricted, value-free dashboard (no monetary figures).
   const canSeeValue = me?.role !== "STAFF";
 

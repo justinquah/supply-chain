@@ -13,14 +13,7 @@ export default async function StockPage() {
   const supabase = await createClient();
   // Internal-only: rejects STAFF and SUPPLIER. All internal roles may view stock
   // levels; only SCM/ADMIN may edit (matches stock/actions.ts write gate).
-  const profile = await requireRole(
-    "SCM",
-    "ADMIN",
-    "ACCOUNTS",
-    "FINANCE",
-    "WAREHOUSE",
-    "LOGISTICS"
-  );
+  const profile = await requireRole("SCM", "ADMIN", "WAREHOUSE", "LOGISTICS");
   const canEdit = (["SCM", "ADMIN"] as string[]).includes(profile.role);
 
   // Fetch products with family/variation info

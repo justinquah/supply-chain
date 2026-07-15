@@ -14,7 +14,7 @@ function num(v: number, dp = 0) {
 }
 
 export default async function InsightsPage() {
-  await requireRole("SCM", "ADMIN", "ACCOUNTS", "FINANCE", "WAREHOUSE", "LOGISTICS");
+  await requireRole("SCM", "ADMIN", "WAREHOUSE", "LOGISTICS");
 
   const supabase = await createClient();
 

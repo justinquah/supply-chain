@@ -21,7 +21,7 @@ export default async function SalesPage({
   searchParams: Promise<{ y?: string; m?: string }>;
 }) {
   // Internal-only: rejects STAFF and SUPPLIER.
-  await requireRole("SCM", "ADMIN", "ACCOUNTS", "FINANCE", "WAREHOUSE", "LOGISTICS");
+  await requireRole("SCM", "ADMIN", "WAREHOUSE", "LOGISTICS");
   const supabase = await createClient();
   const sp = await searchParams;
   const profile = await getCurrentUser();
