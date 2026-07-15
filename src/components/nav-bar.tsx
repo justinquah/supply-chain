@@ -56,6 +56,14 @@ export function NavBar({
 
   const visibleNav = ALL_NAV.filter((item) => item.roles.includes(role));
 
+  // For the Finance tier (Finance/Accounts) the Finance tab leads the menu —
+  // it's their home and the first thing they should see on login.
+  if (role === "FINANCE" || role === "ACCOUNTS") {
+    visibleNav.sort((a, b) =>
+      a.href === "/finance" ? -1 : b.href === "/finance" ? 1 : 0
+    );
+  }
+
   // Pick the most specific (longest href) match so e.g. "/sales/trend" doesn't
   // also light up the "/sales" link.
   const activeHref = visibleNav
