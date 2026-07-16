@@ -37,7 +37,9 @@ export type BaEntry = {
 };
 
 export type FinancingEntry = {
-  date: string; // "YYYY-MM-DD" due_date
+  // "YYYY-MM-DD" due_date. BA/IF settle automatically on this date, so paid
+  // state is derived here: date <= todayKl => settled, date > todayKl => due.
+  date: string;
   amount: number;
   amountMyr: number; // MYR-equivalent estimate (financing is already MYR → ×1)
   kind: "BA" | "INVOICE_FINANCING";
@@ -52,9 +54,9 @@ type Props = {
   baEntries: BaEntry[];
   /** All upcoming BAs (ba_due_date >= today), sorted by date, for the list. */
   upcomingBas: BaEntry[];
-  /** All pending financing obligations, for the calendar dots/day totals. */
+  /** All financing obligations, for the calendar dots/day totals. */
   financingEntries: FinancingEntry[];
-  /** Pending financing due_date >= today, sorted, for the list. */
+  /** Outstanding financing (due_date > today), sorted, for the list. */
   upcomingFinancing: FinancingEntry[];
   /** Initial year (today's year in KL). */
   initialYear: number;
@@ -133,7 +135,8 @@ export function PaymentCalendar({
   let monthTotalPaid = 0; // MYR est.
   let monthTotalDue = 0; // MYR est.
   let monthTotalBa = 0; // MYR est.
-  let monthTotalFinancing = 0; // MYR est.
+  let monthTotalFinancingSettled = 0; // MYR est. — due_date already passed
+  let monthTotalFinancingDue = 0; // MYR est. — still outstanding
 
   for (const e of paidEntries) {
     const [ey, em] = e.date.split("-").map(Number);
@@ -168,12 +171,16 @@ export function PaymentCalendar({
       const arr = financingByDay.get(e.date) ?? [];
       arr.push(e);
       financingByDay.set(e.date, arr);
-      monthTotalFinancing += e.amountMyr;
+      // Auto-settled once the due date arrives — no manual paid toggle exists.
+      if (e.date <= todayKl) monthTotalFinancingSettled += e.amountMyr;
+      else monthTotalFinancingDue += e.amountMyr;
     }
   }
 
-  // Total upcoming outflows for the visible month (MYR est.) = due + BA + financing.
-  const monthTotalUpcoming = monthTotalDue + monthTotalBa + monthTotalFinancing;
+  // Total upcoming outflows for the visible month (MYR est.) = due + BA +
+  // financing that has not settled yet. Settled financing is already cash out.
+  const monthTotalUpcoming =
+    monthTotalDue + monthTotalBa + monthTotalFinancingDue;
 
   // Calendar grid
   const firstDay = new Date(year, month, 1).getDay(); // 0 = Sun
@@ -234,9 +241,16 @@ export function PaymentCalendar({
         </span>
         <span className="flex items-center gap-1.5">
           <span className="h-3 w-3 rounded-full bg-indigo-500 inline-block" />
-          <span className="text-gray-600">Financing (BA/IF):</span>
+          <span className="text-gray-600">Financing due (BA/IF):</span>
           <span className="font-semibold text-indigo-700 tabular-nums">
-            {myrEst(monthTotalFinancing)}
+            {myrEst(monthTotalFinancingDue)}
+          </span>
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-3 w-3 rounded-full bg-gray-300 inline-block" />
+          <span className="text-gray-600">Financing settled:</span>
+          <span className="font-semibold text-gray-500 tabular-nums">
+            {myrEst(monthTotalFinancingSettled)}
           </span>
         </span>
       </div>
@@ -283,21 +297,28 @@ export function PaymentCalendar({
           const hasFinancing = financing && financing.length > 0;
           const isToday = key === todayKl;
 
-          // Per-day upcoming outflow total (MYR est.) = due + BA + financing.
+          // Every financing entry in this cell shares this cell's date, so the
+          // whole day is either settled or still due.
+          const financingSettled = key <= todayKl;
+          const hasFinancingDue = hasFinancing && !financingSettled;
+
+          // Per-day upcoming outflow total (MYR est.) = due + BA + financing
+          // that has not settled yet.
           const dayUpcomingMyr =
             (due?.reduce((s, e) => s + e.amountMyr, 0) ?? 0) +
             (ba?.reduce((s, e) => s + e.amountMyr, 0) ?? 0) +
-            (financing?.reduce((s, e) => s + e.amountMyr, 0) ?? 0);
-          const hasUpcoming = hasDue || hasBa || hasFinancing;
+            (hasFinancingDue
+              ? financing!.reduce((s, e) => s + e.amountMyr, 0)
+              : 0);
+          const hasUpcoming = hasDue || hasBa || hasFinancingDue;
 
-          // Ring colour: paid > financing > ba > due
+          // Ring colour: paid > financing due > ba > due > financing settled
           let ringCls = "";
-          if (hasPaid || hasDue || hasBa || hasFinancing) {
-            if (hasPaid) ringCls = "ring-1 ring-inset ring-emerald-200";
-            else if (hasFinancing) ringCls = "ring-1 ring-inset ring-indigo-200";
-            else if (hasBa) ringCls = "ring-1 ring-inset ring-blue-200";
-            else if (hasDue) ringCls = "ring-1 ring-inset ring-amber-200";
-          }
+          if (hasPaid) ringCls = "ring-1 ring-inset ring-emerald-200";
+          else if (hasFinancingDue) ringCls = "ring-1 ring-inset ring-indigo-200";
+          else if (hasBa) ringCls = "ring-1 ring-inset ring-blue-200";
+          else if (hasDue) ringCls = "ring-1 ring-inset ring-amber-200";
+          else if (hasFinancing) ringCls = "ring-1 ring-inset ring-gray-200";
 
           return (
             <div
@@ -377,11 +398,17 @@ export function PaymentCalendar({
                 </div>
               ))}
 
-              {/* Financing (BA / Invoice Financing) — indigo */}
+              {/* Financing (BA / Invoice Financing) — indigo while due,
+                  muted grey once the due date has passed (auto-settled). */}
               {financing?.map((e, i) => (
                 <div
                   key={`fin-${i}`}
-                  className="rounded px-1 py-0.5 mb-0.5 bg-indigo-50 text-indigo-800 leading-tight"
+                  className={
+                    "rounded px-1 py-0.5 mb-0.5 leading-tight " +
+                    (financingSettled
+                      ? "bg-gray-50 text-gray-500"
+                      : "bg-indigo-50 text-indigo-800")
+                  }
                 >
                   <div className="font-medium tabular-nums">
                     {e.currency !== "MYR" ? `${e.currency} ` : ""}
@@ -389,6 +416,7 @@ export function PaymentCalendar({
                   </div>
                   <div className="opacity-70 truncate" title={financingMarker(e)}>
                     {financingMarker(e)}
+                    {financingSettled && " · paid"}
                   </div>
                 </div>
               ))}
@@ -420,7 +448,11 @@ export function PaymentCalendar({
         </span>
         <span className="flex items-center gap-1">
           <span className="h-2.5 w-2.5 rounded bg-indigo-50 border border-indigo-300 inline-block" />
-          Financing — BA / Invoice Financing (indigo)
+          Financing due — BA / Invoice Financing (indigo)
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="h-2.5 w-2.5 rounded bg-gray-50 border border-gray-300 inline-block" />
+          Financing settled — auto-paid on due date (grey)
         </span>
       </div>
 
@@ -492,7 +524,8 @@ export function PaymentCalendar({
       {upcomingFinancing.length > 0 && (
         <div className="mt-4">
           <h3 className="text-sm font-semibold text-gray-900 mb-3">
-            Upcoming financing (BA / Invoice Financing) ({upcomingFinancing.length})
+            Outstanding financing (BA / Invoice Financing) (
+            {upcomingFinancing.length})
           </h3>
           <div className="rounded-lg border border-indigo-200 overflow-hidden">
             <table className="w-full text-sm">

@@ -14,8 +14,14 @@ import { getSlipUrl } from "./actions";
 import { EditBaTermsFormWrapper } from "./edit-ba-wrapper";
 import {
   FinancingObligations,
+  isSettled,
   type FinancingObligationRow,
 } from "./financing-obligations";
+import {
+  BankFacilities,
+  type BankCreditLimitRow,
+  type BankFacility,
+} from "./bank-facilities";
 
 // ---------------------------------------------------------------------------
 // Money helpers
@@ -85,6 +91,7 @@ export default async function FinancePage() {
     { data: paymentsRaw },
     { data: fxRows },
     { data: financingRaw },
+    { data: bankLimitsRaw },
   ] = await Promise.all([
     supabase
       .from("purchase_orders")
@@ -108,12 +115,18 @@ export default async function FinancePage() {
     // FX rates (currency -> rate_to_myr) for MYR-estimate calendar conversion.
     supabase.from("fx_rates").select("currency, rate_to_myr"),
     // Standalone bank financing obligations (BA + Invoice Financing).
+    // status/paid_at are deliberately NOT selected — paid state is derived from
+    // due_date (BA/IF always settle on their due date), so those columns are
+    // vestigial and must not drive any display logic.
     supabase
       .from("financing_obligations")
-      .select(
-        "id, kind, reference, bank, amount, currency, due_date, status, paid_at, notes"
-      )
+      .select("id, kind, reference, bank, amount, currency, due_date, notes")
       .order("due_date", { ascending: true }),
+    // Bank facility limits — one row per bank, matched to financing_obligations.bank.
+    supabase
+      .from("bank_credit_limits")
+      .select("bank, short_name, limit_amount, currency, notes")
+      .order("short_name", { ascending: true }),
   ]);
 
   // currency -> rate_to_myr; missing rate treated as 1 (best-effort estimate).
@@ -264,12 +277,14 @@ export default async function FinancePage() {
     .filter((e) => e.daysUntil >= 0)
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
-  // (d) Standalone financing obligations (BA + Invoice Financing)
+  // (d) Standalone financing obligations (BA + Invoice Financing).
+  // Paid state is DERIVED: due_date <= today (Asia/KL) => settled.
   const financingRows = (financingRaw ?? []) as FinancingObligationRow[];
 
-  // Calendar entries: all PENDING obligations (financing amounts are already MYR).
+  // Calendar entries: every obligation (financing amounts are already MYR).
+  // The calendar itself derives settled vs due from `date` against `todayKl`.
   const financingEntries: FinancingEntry[] = financingRows
-    .filter((f) => f.status === "PENDING" && f.due_date)
+    .filter((f) => f.due_date)
     .map((f) => ({
       date: toKlDate(f.due_date)!,
       amount: Number(f.amount),
@@ -280,10 +295,39 @@ export default async function FinancePage() {
       currency: f.currency ?? "MYR",
     }));
 
-  // Upcoming financing list: pending, due_date >= today, sorted by date.
+  // Outstanding financing list: due_date > today (anything due today or earlier
+  // has already auto-settled), sorted by date.
   const upcomingFinancing: FinancingEntry[] = financingEntries
-    .filter((e) => e.date >= todayIso)
+    .filter((e) => e.date > todayIso)
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  // (e) Bank facility limits + utilisation.
+  // Only outstanding obligations (due_date > today) consume a facility.
+  const bankLimits = (bankLimitsRaw ?? []) as BankCreditLimitRow[];
+
+  const outstandingByBank = new Map<string, number>();
+  for (const f of financingRows) {
+    if (!f.bank) continue;
+    if (isSettled(f.due_date, todayIso)) continue;
+    const prev = outstandingByBank.get(f.bank) ?? 0;
+    // Convert to MYR so foreign-currency obligations still consume a MYR limit.
+    outstandingByBank.set(f.bank, prev + toMyr(Number(f.amount), f.currency));
+  }
+
+  const bankFacilities: BankFacility[] = bankLimits.map((b) => {
+    const limit = Number(b.limit_amount ?? 0);
+    const outstanding = outstandingByBank.get(b.bank) ?? 0;
+    return {
+      bank: b.bank,
+      shortName: b.short_name || b.bank,
+      limit,
+      outstanding,
+      available: limit - outstanding,
+      utilisationPct: limit > 0 ? (outstanding / limit) * 100 : 0,
+      currency: b.currency || "MYR",
+      notes: b.notes ?? null,
+    };
+  });
 
   // Generate signed URLs for payment slips (only for slips that exist)
   const slipUrls = new Map<string, string>();
@@ -340,6 +384,8 @@ export default async function FinancePage() {
         <CardContent>
           <FinancingObligations
             obligations={financingRows}
+            todayKl={todayIso}
+            banks={bankLimits}
             canManage={
               profile.role === "SCM" ||
               profile.role === "ADMIN" ||
@@ -347,6 +393,16 @@ export default async function FinancePage() {
               profile.role === "FINANCE"
             }
           />
+        </CardContent>
+      </Card>
+
+      {/* (e) Bank facility limits + utilisation */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Bank facility limits</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <BankFacilities facilities={bankFacilities} />
         </CardContent>
       </Card>
 

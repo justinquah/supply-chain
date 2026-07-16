@@ -254,41 +254,14 @@ export async function addFinancingObligation(
   return { ok: true };
 }
 
-/** Mark a financing obligation as PAID (records paid_at = now). */
-export async function markFinancingPaid(id: string): Promise<ActionResult> {
-  await requireRole("SCM", "ADMIN", "ACCOUNTS", "FINANCE");
-  if (!id) return { ok: false, error: "Missing id" };
-
-  const admin = createAdminClient();
-  const { error } = await admin
-    .from("financing_obligations")
-    .update({ status: "PAID", paid_at: new Date().toISOString() })
-    .eq("id", id);
-
-  if (error) return { ok: false, error: error.message };
-
-  revalidatePath("/finance");
-  return { ok: true };
-}
-
-/** Undo a PAID financing obligation back to PENDING (clears paid_at). */
-export async function unmarkFinancingPaid(id: string): Promise<ActionResult> {
-  await requireRole("SCM", "ADMIN", "ACCOUNTS", "FINANCE");
-  if (!id) return { ok: false, error: "Missing id" };
-
-  const admin = createAdminClient();
-  const { error } = await admin
-    .from("financing_obligations")
-    .update({ status: "PENDING", paid_at: null })
-    .eq("id", id);
-
-  if (error) return { ok: false, error: error.message };
-
-  revalidatePath("/finance");
-  return { ok: true };
-}
-
-/** Delete a financing obligation row. */
+/**
+ * Delete a financing obligation row.
+ *
+ * NOTE: there is deliberately no "mark paid" / "unmark paid" action. A BA/IF
+ * obligation always settles on its due date, so paid state is DERIVED
+ * (due_date <= today in Asia/KL => paid). The DB status/paid_at columns are
+ * vestigial and are neither read nor written for display purposes.
+ */
 export async function deleteFinancingObligation(
   id: string
 ): Promise<ActionResult> {

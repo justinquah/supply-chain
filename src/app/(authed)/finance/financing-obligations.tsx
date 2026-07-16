@@ -5,10 +5,9 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import {
   addFinancingObligation,
-  markFinancingPaid,
-  unmarkFinancingPaid,
   deleteFinancingObligation,
 } from "./actions";
+import type { BankCreditLimitRow } from "./bank-facilities";
 
 const inputCls =
   "w-full border border-gray-300 rounded-md px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40";
@@ -30,10 +29,20 @@ export type FinancingObligationRow = {
   amount: number;
   currency: string;
   due_date: string;
-  status: "PENDING" | "PAID";
-  paid_at: string | null;
   notes: string | null;
 };
+
+/**
+ * A BA / Invoice Financing obligation always settles on its due date — there is
+ * no manual "mark paid" step. Paid state is therefore DERIVED, never stored:
+ *   due_date <= today (Asia/KL)  => settled / paid
+ *   due_date >  today (Asia/KL)  => outstanding
+ * The DB status/paid_at columns are vestigial and intentionally ignored here.
+ */
+export function isSettled(dueDate: string | null, todayKl: string): boolean {
+  if (!dueDate) return false;
+  return String(dueDate).slice(0, 10) <= todayKl;
+}
 
 function money(n: number, cur: string): string {
   const prefix = cur && cur !== "MYR" ? `${cur} ` : "RM ";
@@ -61,17 +70,27 @@ function kindLabel(kind: "BA" | "INVOICE_FINANCING"): string {
 
 type Props = {
   obligations: FinancingObligationRow[];
-  /** Whether the current user can add / mark paid / delete. */
+  /** Whether the current user can add / delete. */
   canManage: boolean;
+  /** Today as "YYYY-MM-DD" in Asia/KL — computed server-side, drives paid state. */
+  todayKl: string;
+  /** bank_credit_limits rows — the allowed values for the Add form's bank select. */
+  banks: BankCreditLimitRow[];
 };
 
-export function FinancingObligations({ obligations, canManage }: Props) {
+export function FinancingObligations({
+  obligations,
+  canManage,
+  todayKl,
+  banks,
+}: Props) {
   const router = useRouter();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
-  const pendingTotal = obligations
-    .filter((o) => o.status === "PENDING")
+  // Outstanding = not yet due. Settled obligations no longer owe anything.
+  const outstandingTotal = obligations
+    .filter((o) => !isSettled(o.due_date, todayKl))
     .reduce((s, o) => s + Number(o.amount), 0);
 
   async function run(fn: () => Promise<{ ok: boolean; error?: string }>, id: string) {
@@ -88,11 +107,14 @@ export function FinancingObligations({ obligations, canManage }: Props) {
 
   return (
     <div className="space-y-4">
-      {/* Pending total */}
+      {/* Outstanding total — everything not yet due */}
       <div className="flex flex-wrap items-center gap-2 text-sm">
-        <span className="text-gray-600">Pending financing total:</span>
+        <span className="text-gray-600">Outstanding financing total:</span>
         <span className="font-semibold text-indigo-700 tabular-nums">
-          {money(pendingTotal, "MYR")}
+          {money(outstandingTotal, "MYR")}
+        </span>
+        <span className="text-xs text-gray-400">
+          BA / IF settle automatically on their due date.
         </span>
       </div>
 
@@ -116,6 +138,7 @@ export function FinancingObligations({ obligations, canManage }: Props) {
             <tbody>
               {obligations.map((o) => {
                 const busy = busyId === o.id;
+                const settled = isSettled(o.due_date, todayKl);
                 return (
                   <tr
                     key={o.id}
@@ -142,43 +165,21 @@ export function FinancingObligations({ obligations, canManage }: Props) {
                       {money(Number(o.amount), o.currency)}
                     </td>
                     <td className="py-2 px-3">
+                      {/* Derived from due_date — never manually set. */}
                       <span
                         className={
                           "text-xs px-2 py-0.5 rounded-full font-medium " +
-                          (o.status === "PAID"
-                            ? "bg-emerald-100 text-emerald-700"
+                          (settled
+                            ? "bg-gray-100 text-gray-500"
                             : "bg-amber-100 text-amber-700")
                         }
                       >
-                        {o.status === "PAID" ? "Paid" : "Pending"}
+                        {settled ? "Paid" : "Outstanding"}
                       </span>
                     </td>
                     {canManage && (
                       <td className="py-2 px-3">
                         <div className="flex items-center gap-2">
-                          {o.status === "PENDING" ? (
-                            <button
-                              type="button"
-                              disabled={busy}
-                              onClick={() =>
-                                run(() => markFinancingPaid(o.id), o.id)
-                              }
-                              className="text-xs text-emerald-700 hover:underline disabled:opacity-50"
-                            >
-                              {busy ? "…" : "Mark paid"}
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              disabled={busy}
-                              onClick={() =>
-                                run(() => unmarkFinancingPaid(o.id), o.id)
-                              }
-                              className="text-xs text-amber-700 hover:underline disabled:opacity-50"
-                            >
-                              {busy ? "…" : "Undo"}
-                            </button>
-                          )}
                           <button
                             type="button"
                             disabled={busy}
@@ -210,12 +211,12 @@ export function FinancingObligations({ obligations, canManage }: Props) {
         <p className="text-sm text-red-600">{msg}</p>
       )}
 
-      {canManage && <AddFinancingForm />}
+      {canManage && <AddFinancingForm banks={banks} />}
     </div>
   );
 }
 
-function AddFinancingForm() {
+function AddFinancingForm({ banks }: { banks: BankCreditLimitRow[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -283,8 +284,17 @@ function AddFinancingForm() {
         <Field label="Reference">
           <input name="reference" className={inputCls} placeholder="e.g. IF010" />
         </Field>
+        {/* Bank must match a bank_credit_limits row exactly, otherwise the
+            facility utilisation card cannot attribute this obligation. */}
         <Field label="Bank">
-          <input name="bank" className={inputCls} placeholder="e.g. Maybank" />
+          <select name="bank" className={inputCls} defaultValue="">
+            <option value="">—</option>
+            {banks.map((b) => (
+              <option key={b.bank} value={b.bank}>
+                {b.short_name || b.bank}
+              </option>
+            ))}
+          </select>
         </Field>
         <Field label="Amount *">
           <input
