@@ -56,8 +56,6 @@ type Props = {
   upcomingBas: BaEntry[];
   /** All financing obligations, for the calendar dots/day totals. */
   financingEntries: FinancingEntry[];
-  /** Outstanding financing (due_date > today), sorted, for the list. */
-  upcomingFinancing: FinancingEntry[];
   /** Initial year (today's year in KL). */
   initialYear: number;
   /** Initial month (0-indexed, today's month in KL). */
@@ -109,7 +107,6 @@ export function PaymentCalendar({
   baEntries,
   upcomingBas,
   financingEntries,
-  upcomingFinancing,
   initialYear,
   initialMonth,
   todayKl,
@@ -520,53 +517,6 @@ export function PaymentCalendar({
         </div>
       )}
 
-      {/* Upcoming financing (BA / Invoice Financing) list */}
-      {upcomingFinancing.length > 0 && (
-        <div className="mt-4">
-          <h3 className="text-sm font-semibold text-gray-900 mb-3">
-            Outstanding financing (BA / Invoice Financing) (
-            {upcomingFinancing.length})
-          </h3>
-          <div className="rounded-lg border border-indigo-200 overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-indigo-50 text-left text-gray-600 text-xs">
-                  <th className="py-2 pl-3 pr-2 font-medium">Due date</th>
-                  <th className="py-2 px-2 font-medium">Kind</th>
-                  <th className="py-2 px-2 font-medium">Reference</th>
-                  <th className="py-2 px-2 font-medium">Bank</th>
-                  <th className="py-2 pl-2 pr-3 font-medium text-right">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {upcomingFinancing.map((e, i) => (
-                  <tr
-                    key={`${e.reference ?? "fin"}-${e.date}-${i}`}
-                    className="border-t border-indigo-100 hover:bg-indigo-50/50"
-                  >
-                    <td className="py-2 pl-3 pr-2 text-gray-700">
-                      {fmtDate(e.date)}
-                    </td>
-                    <td className="py-2 px-2">
-                      <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 font-medium">
-                        {e.kind === "BA" ? "Banker's Acceptance" : "Invoice Financing"}
-                      </span>
-                    </td>
-                    <td className="py-2 px-2 font-medium text-gray-800">
-                      {e.reference || "—"}
-                    </td>
-                    <td className="py-2 px-2 text-gray-600">{e.bank || "—"}</td>
-                    <td className="py-2 pl-2 pr-3 tabular-nums text-indigo-800 text-right">
-                      {e.currency !== "MYR" ? `${e.currency} ` : ""}
-                      {formatCurrency(e.amount)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

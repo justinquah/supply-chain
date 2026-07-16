@@ -295,12 +295,6 @@ export default async function FinancePage() {
       currency: f.currency ?? "MYR",
     }));
 
-  // Outstanding financing list: due_date > today (anything due today or earlier
-  // has already auto-settled), sorted by date.
-  const upcomingFinancing: FinancingEntry[] = financingEntries
-    .filter((e) => e.date > todayIso)
-    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-
   // (e) Bank facility limits + utilisation.
   // Only outstanding obligations (due_date > today) consume a facility.
   const bankLimits = (bankLimitsRaw ?? []) as BankCreditLimitRow[];
@@ -366,7 +360,6 @@ export default async function FinancePage() {
             baEntries={baEntries}
             upcomingBas={upcomingBas}
             financingEntries={financingEntries}
-            upcomingFinancing={upcomingFinancing}
             initialYear={klYear}
             initialMonth={klMonth}
             todayKl={todayIso}
