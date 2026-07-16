@@ -8,6 +8,7 @@ import {
   deleteFinancingObligation,
 } from "./actions";
 import type { BankCreditLimitRow } from "./bank-facilities";
+import { isSettled } from "@/lib/financing";
 
 const inputCls =
   "w-full border border-gray-300 rounded-md px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40";
@@ -32,17 +33,6 @@ export type FinancingObligationRow = {
   notes: string | null;
 };
 
-/**
- * A BA / Invoice Financing obligation always settles on its due date — there is
- * no manual "mark paid" step. Paid state is therefore DERIVED, never stored:
- *   due_date <= today (Asia/KL)  => settled / paid
- *   due_date >  today (Asia/KL)  => outstanding
- * The DB status/paid_at columns are vestigial and intentionally ignored here.
- */
-export function isSettled(dueDate: string | null, todayKl: string): boolean {
-  if (!dueDate) return false;
-  return String(dueDate).slice(0, 10) <= todayKl;
-}
 
 function money(n: number, cur: string): string {
   const prefix = cur && cur !== "MYR" ? `${cur} ` : "RM ";

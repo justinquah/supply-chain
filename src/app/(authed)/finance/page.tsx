@@ -14,9 +14,9 @@ import { getSlipUrl } from "./actions";
 import { EditBaTermsFormWrapper } from "./edit-ba-wrapper";
 import {
   FinancingObligations,
-  isSettled,
   type FinancingObligationRow,
 } from "./financing-obligations";
+import { isSettled } from "@/lib/financing";
 import {
   BankFacilities,
   type BankCreditLimitRow,
