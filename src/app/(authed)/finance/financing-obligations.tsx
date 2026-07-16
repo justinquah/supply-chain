@@ -121,14 +121,12 @@ export function FinancingObligations({
                 <th className="py-2 px-3 font-medium">Reference</th>
                 <th className="py-2 px-3 font-medium">Bank</th>
                 <th className="py-2 px-3 font-medium text-right">Amount</th>
-                <th className="py-2 px-3 font-medium">Status</th>
                 {canManage && <th className="py-2 px-3 font-medium">Actions</th>}
               </tr>
             </thead>
             <tbody>
               {obligations.map((o) => {
                 const busy = busyId === o.id;
-                const settled = isSettled(o.due_date, todayKl);
                 return (
                   <tr
                     key={o.id}
@@ -153,19 +151,6 @@ export function FinancingObligations({
                     <td className="py-2 px-3 text-gray-600">{o.bank || "—"}</td>
                     <td className="py-2 px-3 text-right tabular-nums text-gray-800">
                       {money(Number(o.amount), o.currency)}
-                    </td>
-                    <td className="py-2 px-3">
-                      {/* Derived from due_date — never manually set. */}
-                      <span
-                        className={
-                          "text-xs px-2 py-0.5 rounded-full font-medium " +
-                          (settled
-                            ? "bg-gray-100 text-gray-500"
-                            : "bg-amber-100 text-amber-700")
-                        }
-                      >
-                        {settled ? "Paid" : "Outstanding"}
-                      </span>
                     </td>
                     {canManage && (
                       <td className="py-2 px-3">
