@@ -36,6 +36,16 @@ export type EmailDraft = { subject: string; body: string };
  * Newlines in `body` are plain "\n"; percent-encoded they become %0A, which
  * every mail client renders as a line break.
  */
+/**
+ * Internal recipients copied on EVERY supplier email, on top of the supplier's
+ * own CC list (their agent/broker). Kept here rather than on each supplier row
+ * so it stays one place to edit.
+ */
+export const INTERNAL_CC = [
+  "justinquah@blossom-commerce.com",
+  "woanjinq@13media.co",
+];
+
 export function buildMailto(
   r: SupplierRecipients,
   subject: string,
@@ -43,7 +53,16 @@ export function buildMailto(
 ): string {
   const to = (r?.to ?? []).map((a) => String(a).trim()).filter(Boolean);
   if (to.length === 0) return "";
-  const cc = (r?.cc ?? []).map((a) => String(a).trim()).filter(Boolean);
+  const supplierCc = (r?.cc ?? []).map((a) => String(a).trim()).filter(Boolean);
+  // De-duplicate case-insensitively so an address listed on the supplier and
+  // internally is not copied twice.
+  const seen = new Set<string>();
+  const cc = [...supplierCc, ...INTERNAL_CC].filter((a) => {
+    const k = a.toLowerCase();
+    if (seen.has(k) || to.some((t) => t.toLowerCase() === k)) return false;
+    seen.add(k);
+    return true;
+  });
 
   const params: string[] = [];
   if (cc.length > 0) params.push(`cc=${cc.map(encodeAddress).join(",")}`);
