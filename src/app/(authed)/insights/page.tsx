@@ -14,7 +14,10 @@ function num(v: number, dp = 0) {
 }
 
 export default async function InsightsPage() {
-  await requireRole("SCM", "ADMIN", "WAREHOUSE", "LOGISTICS");
+  const profile = await requireRole("SCM", "ADMIN", "WAREHOUSE", "LOGISTICS");
+  // Only SCM/ADMIN may act on PO timing (see applyPoTiming), so only they get
+  // the follow-up "Email supplier" draft. Mirrors the existing gate — no widening.
+  const canEmailSupplier = profile.role === "SCM" || profile.role === "ADMIN";
 
   const supabase = await createClient();
 
@@ -109,6 +112,49 @@ export default async function InsightsPage() {
     });
   }
 
+  // Supplier contacts per PO, for the post-Apply "Email supplier" mailto draft.
+  // supplier_contact_emails / supplier_cc_emails are the mailing lists;
+  // profiles.email is the supplier's LOGIN placeholder and is NOT selected.
+  const insightPoIds = [
+    ...new Set(
+      Object.values(incomingLines)
+        .flat()
+        .map((l) => l.poId)
+        .filter((id): id is string => Boolean(id))
+    ),
+  ];
+  const poSuppliers: Record<
+    string,
+    { name: string | null; to: string[]; cc: string[] }
+  > = {};
+  if (canEmailSupplier && insightPoIds.length > 0) {
+    const { data: poSupplierRows } = await supabase
+      .from("purchase_orders")
+      .select(
+        "id, supplier:profiles!supplier_id(name, company_name, supplier_contact_emails, supplier_cc_emails)"
+      )
+      .in("id", insightPoIds);
+    type SupplierEmbed = {
+      name?: string | null;
+      company_name?: string | null;
+      supplier_contact_emails?: string[] | null;
+      supplier_cc_emails?: string[] | null;
+    };
+    const supplierRows = (poSupplierRows ?? []) as unknown as {
+      id: string;
+      supplier: SupplierEmbed | null;
+    }[];
+    for (const row of supplierRows) {
+      const s = row.supplier;
+      if (!s) continue;
+      poSuppliers[String(row.id)] = {
+        name: s.company_name || s.name || null,
+        to: s.supplier_contact_emails ?? [],
+        cc: s.supplier_cc_emails ?? [],
+      };
+    }
+  }
+
   const reorderProducts = products.map((p) => ({
     id: p.id,
     sku: p.sku,
@@ -168,6 +214,7 @@ export default async function InsightsPage() {
           todayISO={todayISO}
           resolvedDelay={[...resolvedDelay]}
           resolvedExpedite={[...resolvedExpedite]}
+          poSuppliers={poSuppliers}
         />
       </div>
     </div>

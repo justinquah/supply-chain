@@ -14,6 +14,25 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { applyPoTiming } from "@/app/(authed)/purchase-orders/actions";
+import { EmailSupplierButton } from "@/app/(authed)/purchase-orders/email-supplier-button";
+import { poTimingEmail } from "@/lib/supplier-email";
+
+/** Supplier mailing lists for one PO (empty when the viewer may not email). */
+export type PoSupplier = { name: string | null; to: string[]; cc: string[] };
+
+/**
+ * A timing action applied during this page session. Held at the top level (not
+ * inside the task row) because applying an ETA + router.refresh() re-derives the
+ * task lists, which unmounts the row — the "tell the supplier" follow-up has to
+ * outlive that. `from` is the ETA as it stood BEFORE the change.
+ */
+type AppliedTiming = {
+  poId: string;
+  po: string;
+  from: string | null;
+  to: string;
+  actionType: "delay" | "expedite";
+};
 
 const IDEAL = 1.5; // target months of cover
 const OVER = 3; // overstock threshold (months)
@@ -84,13 +103,21 @@ export function PoReorderInsights({
   todayISO,
   resolvedDelay,
   resolvedExpedite,
+  poSuppliers = {},
 }: {
   products: ReorderProduct[];
   incoming: Record<string, IncLine[]>;
   todayISO: string;
   resolvedDelay: string[];
   resolvedExpedite: string[];
+  /** poId -> supplier mailing lists. Empty for roles that cannot email. */
+  poSuppliers?: Record<string, PoSupplier>;
 }) {
+  // Timing actions applied in this session -> the follow-up supplier email.
+  const [applied, setApplied] = useState<Record<string, AppliedTiming>>({});
+  const markApplied = (a: AppliedTiming) =>
+    setApplied((prev) => ({ ...prev, [a.poId]: a }));
+
   const today = new Date(todayISO + "T00:00:00Z").getTime();
   const daysTo = (eta: string | null) =>
     eta ? Math.round((new Date(eta + "T00:00:00Z").getTime() - today) / 86400000) : null;
@@ -200,6 +227,9 @@ export function PoReorderInsights({
         actionType="expedite"
         resolvedSet={resolvedExpediteSet}
         todayISO={todayISO}
+        poSuppliers={poSuppliers}
+        applied={applied}
+        onApplied={markApplied}
         empty="No PO needs expediting."
       />
       <FlatCard
@@ -217,6 +247,9 @@ export function PoReorderInsights({
         actionType="delay"
         resolvedSet={resolvedDelaySet}
         todayISO={todayISO}
+        poSuppliers={poSuppliers}
+        applied={applied}
+        onApplied={markApplied}
         empty="No PO worth delaying."
       />
     </div>
@@ -256,6 +289,9 @@ function PoGroupCard({
   actionType,
   resolvedSet,
   todayISO,
+  poSuppliers,
+  applied,
+  onApplied,
   empty,
 }: {
   title: string;
@@ -265,13 +301,63 @@ function PoGroupCard({
   actionType: "delay" | "expedite";
   resolvedSet: Set<string>;
   todayISO: string;
+  poSuppliers: Record<string, PoSupplier>;
+  applied: Record<string, AppliedTiming>;
+  onApplied: (a: AppliedTiming) => void;
   empty: string;
 }) {
   const active = groups.filter((g) => !(g.poId && resolvedSet.has(g.poId)));
   const resolved = groups.filter((g) => g.poId && resolvedSet.has(g.poId));
+  // Applied in this session, for this card's action — the supplier still has to
+  // be told, so this survives the task row disappearing from the lists above.
+  const justApplied = Object.values(applied).filter(
+    (a) => a.actionType === actionType
+  );
 
   return (
     <Shell title={title} tone={tone} hint={hint}>
+      {justApplied.length > 0 && (
+        <div className="mb-3 space-y-2">
+          <div className="text-[11px] font-medium text-gray-500">
+            Just applied — tell the supplier ({justApplied.length})
+          </div>
+          {justApplied.map((a) => {
+            const sup = poSuppliers[a.poId] ?? null;
+            const draft = poTimingEmail({
+              poNumber: a.po,
+              supplierName: sup?.name ?? null,
+              kind: actionType === "expedite" ? "EXPEDITE" : "DELAY",
+              currentEta: a.from,
+              requestedEta: a.to,
+            });
+            return (
+              <div
+                key={a.poId}
+                className="rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1.5"
+              >
+                <div className="text-xs font-medium text-emerald-700">
+                  <span className="font-mono">{a.po}</span> · {fmtEta(a.from)}{" "}
+                  <span className="text-emerald-400">→</span> {fmtEta(a.to)}
+                </div>
+                <div className="mt-1">
+                  <EmailSupplierButton
+                    recipients={{ to: sup?.to ?? [], cc: sup?.cc ?? [] }}
+                    subject={draft.subject}
+                    body={draft.body}
+                    label={
+                      actionType === "expedite"
+                        ? "Email supplier — expedite"
+                        : "Email supplier — delay"
+                    }
+                    size="xs"
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {active.length === 0 && resolved.length === 0 ? (
         <p className="text-xs text-gray-400 py-1">{empty}</p>
       ) : (
@@ -283,6 +369,7 @@ function PoGroupCard({
                 group={g}
                 actionType={actionType}
                 proposed={proposedEta(g, actionType, todayISO)}
+                onApplied={onApplied}
               />
             ))}
           </ul>
@@ -319,12 +406,17 @@ function ActivePoGroup({
   group,
   actionType,
   proposed,
+  onApplied,
 }: {
   group: PoGroup;
   actionType: "delay" | "expedite";
   proposed: string;
+  onApplied: (a: AppliedTiming) => void;
 }) {
   const router = useRouter();
+  // The ETA as it stood before this row was touched — the supplier email needs
+  // to state both the current and the requested date.
+  const [etaBefore] = useState<string | null>(group.eta);
   const [eta, setEta] = useState(proposed);
   const [isPending, startTransition] = useTransition();
   const [done, setDone] = useState<string | null>(null);
@@ -346,6 +438,13 @@ function ActivePoGroup({
       const res = await applyPoTiming(group.poId!, actionType, eta);
       if (res.ok) {
         setDone(eta);
+        onApplied({
+          poId: group.poId!,
+          po: group.po,
+          from: etaBefore,
+          to: eta,
+          actionType,
+        });
         router.refresh();
       } else {
         setErr(res.error ?? "Failed to apply");

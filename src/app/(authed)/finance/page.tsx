@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { createClient, requireRole } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCurrency } from "@/lib/constants";
+import { EmailSupplierButton } from "../purchase-orders/email-supplier-button";
+import { paymentSlipEmail } from "@/lib/supplier-email";
 import { RecordPaymentForm } from "./record-payment-form";
 import {
   PaymentCalendar,
@@ -97,7 +100,7 @@ export default async function FinancePage() {
       .from("purchase_orders")
       .select(
         "id, po_number, invoice_currency, deposit_percent, payment_terms, " +
-          "deposit_due_date, balance_due_date, actual_eta, targeted_eta, " +
+          "deposit_due_date, balance_due_date, actual_eta, targeted_eta, supplier_id, " +
           "supplier:profiles!supplier_id(name, company_name)"
       )
       .order("created_at", { ascending: false }),
@@ -332,6 +335,58 @@ export default async function FinancePage() {
     }
   }
 
+  // --- Supplier contacts for the "Email supplier" payment-advice draft -------
+  // Fetched through the service-role client because the profiles RLS policy
+  // (`id = auth.uid() OR has_role('SCM','ADMIN')`) hides supplier rows from
+  // FINANCE/ACCOUNTS — same pattern the PO detail page uses for product costs.
+  // Scoped to the suppliers of POs that already have a payment slip on this
+  // page, and reads only the two contact-list columns. profiles.email is the
+  // supplier's LOGIN address (a placeholder) and is deliberately NOT read.
+  const slipSupplierIds = [
+    ...new Set(
+      payments
+        .filter((p) => p.payment_slip_path)
+        .map((p) => poMap.get(p.po_id)?.supplier_id as string | undefined)
+        .filter((id): id is string => Boolean(id))
+    ),
+  ];
+  const supplierContacts = new Map<
+    string,
+    { name: string | null; to: string[]; cc: string[] }
+  >();
+  if (slipSupplierIds.length > 0) {
+    // Fail soft: createAdminClient() throws when SUPABASE_SERVICE_ROLE_KEY is
+    // unset. Contacts are a convenience here, so a missing key must degrade to
+    // a disabled "Email supplier" button — never take the Finance page down.
+    try {
+      const admin = createAdminClient();
+      const { data: contactRows } = await admin
+        .from("profiles")
+        .select("id, name, company_name, supplier_contact_emails, supplier_cc_emails")
+        .in("id", slipSupplierIds);
+      const rows = (contactRows ?? []) as unknown as {
+        id: string;
+        name: string | null;
+        company_name: string | null;
+        supplier_contact_emails: string[] | null;
+        supplier_cc_emails: string[] | null;
+      }[];
+      for (const c of rows) {
+        supplierContacts.set(String(c.id), {
+          name: c.company_name || c.name || null,
+          to: c.supplier_contact_emails ?? [],
+          cc: c.supplier_cc_emails ?? [],
+        });
+      }
+    } catch (e) {
+      console.error("[finance] supplier contact lookup failed:", e);
+    }
+  }
+  const contactsFor = (poId: string) => {
+    const sid = poMap.get(poId)?.supplier_id as string | undefined;
+    return (sid && supplierContacts.get(sid)) || null;
+  };
+
   return (
     <div className="space-y-8">
       {/* Page header */}
@@ -538,6 +593,8 @@ export default async function FinancePage() {
                             payment={p}
                             slipUrl={slipUrls.get(p.id) ?? null}
                             isFinance={isFinance}
+                            poNumber={po.po_number ?? null}
+                            supplierContacts={contactsFor(po.id)}
                           />
                         ))}
                       </div>
@@ -592,6 +649,8 @@ export default async function FinancePage() {
                           payment={p}
                           slipUrl={slipUrls.get(p.id) ?? null}
                           isFinance={isFinance}
+                          poNumber={po.po_number ?? null}
+                          supplierContacts={contactsFor(po.id)}
                         />
                       ))}
                     </div>
@@ -625,10 +684,30 @@ type PaymentRowProps = {
   };
   slipUrl: string | null;
   isFinance: boolean;
+  poNumber: string | null;
+  supplierContacts: { name: string | null; to: string[]; cc: string[] } | null;
 };
 
-function PaymentRow({ payment: p, slipUrl, isFinance }: PaymentRowProps) {
+function PaymentRow({
+  payment: p,
+  slipUrl,
+  isFinance,
+  poNumber,
+  supplierContacts,
+}: PaymentRowProps) {
   const isBa = p.payment_method === "BANKERS_ACCEPTANCE";
+
+  // Payment-advice draft — only offered once a slip actually exists, since the
+  // whole point of the mail is "the slip is attached".
+  const slipDraft = p.payment_slip_path
+    ? paymentSlipEmail({
+        poNumber,
+        supplierName: supplierContacts?.name ?? null,
+        amount: Number(p.amount),
+        currency: p.currency ?? null,
+        paidOn: p.paid_at,
+      })
+    : null;
 
   return (
     <div
@@ -676,6 +755,21 @@ function PaymentRow({ payment: p, slipUrl, isFinance }: PaymentRowProps) {
           </a>
         )}
       </div>
+      {slipDraft && (
+        <div className="pt-1">
+          <EmailSupplierButton
+            recipients={{
+              to: supplierContacts?.to ?? [],
+              cc: supplierContacts?.cc ?? [],
+            }}
+            subject={slipDraft.subject}
+            body={slipDraft.body}
+            label="Email supplier — payment advice"
+            attachmentHint="Attach the payment slip before sending."
+            size="xs"
+          />
+        </div>
+      )}
       {isBa && p.ba_due_date && (
         <div className="text-xs text-blue-700">
           BA due: <strong>{fmtDate(p.ba_due_date)}</strong>

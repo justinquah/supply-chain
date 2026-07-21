@@ -10,6 +10,8 @@ import { StageForms } from "./stage-forms";
 import { ShipmentForms } from "./shipment-forms";
 import { ReceiptProofLink } from "./receipt-proof-link";
 import { OceanFreightCell } from "./ocean-freight-cell";
+import { EmailSupplierButton } from "../email-supplier-button";
+import { poIssuedEmail } from "@/lib/supplier-email";
 import {
   PO_WORKFLOW_COLORS,
   PO_WORKFLOW_LABELS,
@@ -94,7 +96,10 @@ export default async function PurchaseOrderDetailPage({
             "etd, supplier_eta, logistics_eta, eta_to_warehouse, clearance_status, eta_delayed, delay_reason, " +
             "container_arrived_at, unload_completed_at, received_qty, damaged_qty, receipt_remark, receipt_proof_path, " +
             "ocean_freight_cost, ocean_freight_currency, " +
-            "supplier:profiles!supplier_id(name, company_name), " +
+            // supplier_contact_emails / supplier_cc_emails drive the "Email
+            // supplier" mailto draft. profiles.email is the supplier's LOGIN
+            // address (a placeholder) and is deliberately NOT selected.
+            "supplier:profiles!supplier_id(name, company_name, supplier_contact_emails, supplier_cc_emails), " +
             "po_documents(id, doc_type, file_path, file_name, uploaded_at)"
         )
         .eq("id", id)
@@ -153,7 +158,12 @@ export default async function PurchaseOrderDetailPage({
     file_name: string;
   }[];
   const docTypes = new Set(docs.map((d) => d.doc_type));
-  const supplier = poRow.supplier as { name?: string; company_name?: string } | null;
+  const supplier = poRow.supplier as {
+    name?: string;
+    company_name?: string;
+    supplier_contact_emails?: string[] | null;
+    supplier_cc_emails?: string[] | null;
+  } | null;
   const cur = poRow.invoice_currency || poRow.currency || "MYR";
 
   // Per-line PO value = quantity × the (product, supplier) unit cost. Fetched via
@@ -227,6 +237,33 @@ export default async function PurchaseOrderDetailPage({
     eta_delayed: !!poRow.eta_delayed,
     delay_reason: (poRow.delay_reason ?? null) as string | null,
   };
+
+  // --- "Email supplier" draft: PO issued with a target ETA (SCM/ADMIN only) ---
+  // Same gate as the SCM-owned ETA fields above (shipmentCaps.canTargeted), so
+  // this adds no access. Non-SCM roles cannot read supplier contact emails under
+  // the profiles RLS policy anyway.
+  const supplierName = supplier?.company_name || supplier?.name || null;
+  const supplierRecipients = {
+    to: supplier?.supplier_contact_emails ?? [],
+    cc: supplier?.supplier_cc_emails ?? [],
+  };
+  // Short "Items:" line — only meaningful once shipping lines exist.
+  const lineSummary =
+    incomingRows.length > 0
+      ? incomingRows
+          .slice(0, 4)
+          .map((r) => {
+            const sku = (r.product as { sku?: string } | null)?.sku ?? "item";
+            return `${sku} x ${Number(r.quantity || 0).toLocaleString("en-MY")}`;
+          })
+          .join("; ") + (incomingRows.length > 4 ? "; …" : "")
+      : null;
+  const poIssuedDraft = poIssuedEmail({
+    poNumber: poRow.po_number ?? null,
+    supplierName,
+    targetEta: shipmentData.targeted_eta,
+    lineSummary,
+  });
 
   return (
     <div className="space-y-6">
@@ -330,8 +367,22 @@ export default async function PurchaseOrderDetailPage({
             </span>
           )}
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <ShipmentForms data={shipmentData} caps={shipmentCaps} />
+          {isScmAdmin && (
+            <div className="border-t border-gray-100 pt-4">
+              <EmailSupplierButton
+                recipients={supplierRecipients}
+                subject={poIssuedDraft.subject}
+                body={poIssuedDraft.body}
+                label="Email supplier — PO issued"
+                attachmentHint="Attach the PO PDF before sending."
+                disabledReason={
+                  shipmentData.targeted_eta ? null : "Set a target ETA first"
+                }
+              />
+            </div>
+          )}
         </CardContent>
       </Card>
 
