@@ -38,6 +38,30 @@ function rm(v: number) {
   return "RM " + Number(v).toLocaleString("en-MY", { maximumFractionDigits: 0 });
 }
 
+/**
+ * Longest common prefix shared by every SKU in a family, trimmed back to the
+ * last separator so we never cut mid-token. Returns "" when the group has fewer
+ * than 2 rows or the shared part is too short to be worth hiding.
+ */
+function commonSkuPrefix(skus: string[]): string {
+  if (skus.length < 2) return "";
+  let prefix = skus[0] ?? "";
+  for (const sku of skus.slice(1)) {
+    let i = 0;
+    while (i < prefix.length && i < sku.length && prefix[i] === sku[i]) i++;
+    prefix = prefix.slice(0, i);
+    if (!prefix) return "";
+  }
+  // Cut back to the last separator so "ABC-RED" / "ABC-BLUE" yields "ABC-",
+  // not "ABC-" + a stray letter.
+  const cut = Math.max(prefix.lastIndexOf("-"), prefix.lastIndexOf("_"));
+  prefix = cut >= 0 ? prefix.slice(0, cut + 1) : "";
+  // Never hide so much that a SKU renders empty.
+  if (prefix.length < 3) return "";
+  if (skus.some((s) => s.length <= prefix.length)) return "";
+  return prefix;
+}
+
 function coverageClass(cov: number | null) {
   if (cov == null) return "text-gray-400";
   if (cov < IDEAL) return "text-red-600 font-semibold";
@@ -218,11 +242,20 @@ export function GroupedInventory({
                   </td>
                 </tr>
                 {expanded &&
-                  g.rows
+                  (() => {
+                    // Hide the prefix every SKU in this family repeats — it is
+                    // pure width with no information. Full code stays available
+                    // in the title tooltip.
+                    const skuPrefix = commonSkuPrefix(g.rows.map((r) => r.sku || ""));
+                    return g.rows
                     .sort((a, b) => b.ams_total - a.ams_total)
                     .map((p) => {
                       const pb = incomingMap?.[p.id] ?? { thisMonth: 0, nextMonth: 0, following: 0 };
                       const ls = lastMonthSalesMap?.[p.id] ?? 0;
+                      const shortSku =
+                        skuPrefix && p.sku?.startsWith(skuPrefix)
+                          ? "…" + p.sku.slice(skuPrefix.length)
+                          : p.sku;
                       return (
                         <tr
                           key={p.id}
@@ -230,8 +263,11 @@ export function GroupedInventory({
                         >
                           <td className="py-1.5 pl-10 pr-3 sticky left-0 z-10 bg-gray-50">
                             {p.variation || p.name}
-                            <span className="text-xs text-gray-400 ml-2">
-                              {p.sku}
+                            <span
+                              className="text-[11px] text-gray-400 ml-2 inline-block max-w-[6rem] truncate align-bottom"
+                              title={p.sku}
+                            >
+                              {shortSku}
                             </span>
                           </td>
                           <td className="py-1.5 px-3 text-right tabular-nums">
@@ -272,7 +308,8 @@ export function GroupedInventory({
                           </td>
                         </tr>
                       );
-                    })}
+                    });
+                  })()}
               </Fragment>
             );
           })}
