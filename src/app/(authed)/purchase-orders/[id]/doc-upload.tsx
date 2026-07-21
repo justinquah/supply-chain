@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { uploadPoDocument } from "../actions";
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, formatBytes } from "@/lib/constants";
 
 // Friendly labels for each doc_type enum value (default = PO PDF).
 const DOC_TYPE_OPTIONS: { value: string; label: string }[] = [
@@ -29,17 +30,35 @@ export function DocUpload({ poId }: { poId: string }) {
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = e.currentTarget;
+    const fd = new FormData(form);
+
+    // Server Actions reject an over-limit body with a 413 before the action
+    // runs, so uploadPoDocument can never report this — check client-side.
+    const picked = fd.get("file");
+    if (picked instanceof File && picked.size > MAX_UPLOAD_BYTES) {
+      setMsg(
+        `Error: ${picked.name} is ${formatBytes(picked.size)} — over the ${MAX_UPLOAD_LABEL} upload limit. Compress it and retry.`
+      );
+      return;
+    }
+
     setSaving(true);
     setMsg(null);
-    const fd = new FormData(form);
-    const res = await uploadPoDocument(poId, fd);
-    setSaving(false);
-    if (res.ok) {
-      setMsg("Uploaded.");
-      form.reset();
-      router.refresh();
-    } else {
-      setMsg(`Error: ${res.error}`);
+    try {
+      const res = await uploadPoDocument(poId, fd);
+      if (res.ok) {
+        setMsg("Uploaded.");
+        form.reset();
+        router.refresh();
+      } else {
+        setMsg(`Error: ${res.error}`);
+      }
+    } catch (ex) {
+      setMsg(
+        `Error: ${ex instanceof Error ? ex.message : "the server rejected the upload"}`
+      );
+    } finally {
+      setSaving(false);
     }
   }
 

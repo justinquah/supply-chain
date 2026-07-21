@@ -145,6 +145,31 @@ export const CONTAINER_TYPE_LABELS: Record<string, string> = {
   LCL: "LCL (Less than Container Load)",
 };
 
+// ---------------------------------------------------------------------------
+// Upload size ceiling
+// ---------------------------------------------------------------------------
+// Every file upload in this app goes through a Next.js Server Action. Server
+// Actions cap the REQUEST BODY at 1 MB unless
+// `experimental.serverActions.bodySizeLimit` is set — see next.config.ts, which
+// raises it to match MAX_UPLOAD_BYTES below. Over the limit, Next rejects the
+// POST with a 413 before the action's code ever runs, so the server action can
+// never report the problem itself: the client has to pre-check.
+//
+// Keep this in sync with next.config.ts.
+//
+// NOTE for production: Vercel additionally caps a serverless function's request
+// body at 4.5 MB, which this setting cannot raise. Anything larger has to move
+// to a direct-to-Supabase-Storage upload from the browser.
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB
+export const MAX_UPLOAD_LABEL = "10 MB";
+
+/** Human-readable file size, e.g. "3.4 MB". */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function formatCurrency(amount: number): string {
   return `RM ${amount.toLocaleString("en-MY", {
     minimumFractionDigits: 2,

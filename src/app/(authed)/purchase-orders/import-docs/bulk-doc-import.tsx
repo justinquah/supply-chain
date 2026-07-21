@@ -3,6 +3,12 @@
 import { useMemo, useRef, useState } from "react";
 import { importPoDocuments, type ImportPoDocumentsResult } from "../import-actions";
 import { Button } from "@/components/ui/button";
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, formatBytes } from "@/lib/constants";
+
+// Server Actions cap the whole POST body, not the individual file, so a batch of
+// scans has to be split into several requests. 80% leaves room for the multipart
+// framing and the per-row po_id / doc_type fields.
+const BATCH_BYTES = Math.floor(MAX_UPLOAD_BYTES * 0.8);
 
 type PoOption = { id: string; po_number: string };
 
@@ -100,19 +106,74 @@ export function BulkDocImport({ pos }: { pos: PoOption[] }) {
     const toUpload = rows.filter((r) => r.include && r.poId);
     if (toUpload.length === 0) return;
 
-    const fd = new FormData();
-    for (const r of toUpload) {
-      fd.append("files", r.file);
-      fd.append("po_id", r.poId);
-      fd.append("doc_type", r.docType);
+    const failed: { file: string; reason: string }[] = [];
+
+    // A single file over the ceiling can never be sent, batching or not.
+    const sendable = toUpload.filter((r) => {
+      if (r.file.size > MAX_UPLOAD_BYTES) {
+        failed.push({
+          file: r.file.name,
+          reason: `${formatBytes(r.file.size)} — over the ${MAX_UPLOAD_LABEL} upload limit`,
+        });
+        return false;
+      }
+      return true;
+    });
+
+    // Split into request-sized batches. Sending everything in one POST exceeds
+    // the Server Action body limit as soon as a few scanned K1s are included,
+    // and Next rejects it with a 413 before importPoDocuments ever runs.
+    const batches: RowState[][] = [];
+    let batch: RowState[] = [];
+    let batchSize = 0;
+    for (const r of sendable) {
+      if (batch.length > 0 && batchSize + r.file.size > BATCH_BYTES) {
+        batches.push(batch);
+        batch = [];
+        batchSize = 0;
+      }
+      batch.push(r);
+      batchSize += r.file.size;
     }
+    if (batch.length > 0) batches.push(batch);
 
     setUploading(true);
     setResult(null);
-    const res = await importPoDocuments(fd);
+
+    let uploaded = 0;
+    let fatal: string | null = null;
+
+    for (const b of batches) {
+      const fd = new FormData();
+      for (const r of b) {
+        fd.append("files", r.file);
+        fd.append("po_id", r.poId);
+        fd.append("doc_type", r.docType);
+      }
+      try {
+        const res = await importPoDocuments(fd);
+        if (!res.ok) {
+          fatal = res.error ?? "Upload failed";
+          break;
+        }
+        uploaded += res.uploaded ?? 0;
+        if (res.failed) failed.push(...res.failed);
+      } catch (ex) {
+        fatal =
+          ex instanceof Error ? ex.message : "The server rejected the upload request";
+        break;
+      }
+    }
+
     setUploading(false);
-    setResult(res);
-    if (res.ok) {
+
+    if (fatal) {
+      setResult({ ok: false, error: fatal });
+      return;
+    }
+    setResult({ ok: true, uploaded, failed });
+    // Only clear the picker when nothing needs another look.
+    if (failed.length === 0) {
       setRows([]);
       if (fileRef.current) fileRef.current.value = "";
     }
@@ -130,6 +191,10 @@ export function BulkDocImport({ pos }: { pos: PoOption[] }) {
             onChange={handleFiles}
             className="text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-gray-100 file:text-gray-700 file:text-sm hover:file:bg-gray-200"
           />
+          <span className="text-xs text-gray-400">
+            Up to {MAX_UPLOAD_LABEL} per file. Large batches are sent in several
+            requests automatically.
+          </span>
         </label>
       </div>
 
@@ -173,6 +238,16 @@ export function BulkDocImport({ pos }: { pos: PoOption[] }) {
                       </td>
                       <td className="py-2 px-3 text-gray-700 max-w-[18rem] truncate" title={r.file.name}>
                         {r.file.name}
+                        <span
+                          className={
+                            "ml-2 text-xs " +
+                            (r.file.size > MAX_UPLOAD_BYTES
+                              ? "text-red-600"
+                              : "text-gray-400")
+                          }
+                        >
+                          {formatBytes(r.file.size)}
+                        </span>
                       </td>
                       <td className="py-2 px-3">
                         <select
