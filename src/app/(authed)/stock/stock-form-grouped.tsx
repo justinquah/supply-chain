@@ -39,6 +39,16 @@ export function StockFormGrouped({
   const [values, setValues] = useState<Record<string, string>>(
     Object.fromEntries(rows.map((r) => [r.id, String(r.current)]))
   );
+  // Re-sync the inputs whenever the server sends different quantities (e.g. after a
+  // stock upload calls router.refresh()). Without this the inputs keep their
+  // pre-upload values, every row then looks "changed" against the refreshed
+  // `current`, and Save writes last week's numbers back over the fresh upload.
+  const rowsKey = rows.map((r) => `${r.id}:${r.current}`).join("|");
+  const [syncedKey, setSyncedKey] = useState(rowsKey);
+  if (rowsKey !== syncedKey) {
+    setSyncedKey(rowsKey);
+    setValues(Object.fromEntries(rows.map((r) => [r.id, String(r.current)])));
+  }
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);

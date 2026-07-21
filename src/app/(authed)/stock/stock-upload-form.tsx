@@ -89,6 +89,13 @@ export function StockUploadForm() {
                   {result.totalUnits?.toLocaleString("en-MY")} units) for snapshot date{" "}
                   {result.snapshotDate}.
                 </p>
+                {result.zeroFilled ? (
+                  <p className="text-gray-600">
+                    {result.zeroFilled} active product
+                    {result.zeroFilled === 1 ? " was" : "s were"} not in the file and
+                    recorded as <strong>0 (out of stock)</strong> for this week.
+                  </p>
+                ) : null}
                 {result.unknownSkus && result.unknownSkus.length > 0 && (
                   <div className="border border-amber-200 bg-amber-50 rounded-md p-3">
                     <p className="font-medium text-amber-800">

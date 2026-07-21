@@ -15,6 +15,14 @@ export function StockForm({ rows, canEdit }: { rows: Row[]; canEdit: boolean }) 
   const [values, setValues] = useState<Record<string, string>>(
     Object.fromEntries(rows.map((r) => [r.id, String(r.current)]))
   );
+  // Re-sync when the server sends different quantities (e.g. after an upload
+  // refreshes the page) so stale inputs can't be saved over a fresh upload.
+  const rowsKey = rows.map((r) => `${r.id}:${r.current}`).join("|");
+  const [syncedKey, setSyncedKey] = useState(rowsKey);
+  if (rowsKey !== syncedKey) {
+    setSyncedKey(rowsKey);
+    setValues(Object.fromEntries(rows.map((r) => [r.id, String(r.current)])));
+  }
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 

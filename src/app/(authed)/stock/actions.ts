@@ -41,6 +41,8 @@ export type ImportStockResult = {
   totalUnits?: number;
   unknownSkus?: UnknownSku[];
   snapshotDate?: string;
+  /** Active products absent from the file, recorded as 0 (out of stock). */
+  zeroFilled?: number;
 };
 
 // Resolve a header value case/space-insensitively against a list of
@@ -145,8 +147,12 @@ export async function importStock(formData: FormData): Promise<ImportStockResult
 
   const { data: products, error: prodErr } = await supabase
     .from("products")
-    .select("id, sku, stock_pieces_per_unit");
+    .select("id, sku, stock_pieces_per_unit, is_active");
   if (prodErr) return { ok: false, error: `Could not load products: ${prodErr.message}` };
+  // Active products are zero-filled when absent from the file (see below).
+  const activeProductIds = (products ?? [])
+    .filter((p) => (p as { is_active?: boolean }).is_active !== false)
+    .map((p) => p.id as string);
   for (const p of products ?? []) {
     // When the stock file counts individual pieces under the product's own (pack) SKU,
     // divide by stock_pieces_per_unit to get sellable main units (e.g. a 500g×16 pack SKU
@@ -199,6 +205,21 @@ export async function importStock(formData: FormData): Promise<ImportStockResult
     const [, date] = key.split("|");
     datesTouched.add(date);
   }
+
+  // ---- Zero-fill: an active product absent from the file is OUT OF STOCK, not
+  // unchanged. Without this the dashboard falls back to the last snapshot on or
+  // before the viewed week, so a product that sells out and drops off the export
+  // keeps reporting its last healthy quantity and never registers as OOS.
+  let zeroFilled = 0;
+  for (const date of datesTouched) {
+    for (const pid of activeProductIds) {
+      const key = `${pid}|${date}`;
+      if (!qtyByProduct.has(key)) {
+        qtyByProduct.set(key, 0);
+        zeroFilled++;
+      }
+    }
+  }
   for (const date of datesTouched) {
     const { error: delErr } = await supabase
       .from("stock_snapshots")
@@ -224,7 +245,8 @@ export async function importStock(formData: FormData): Promise<ImportStockResult
   if (inserts.length > 0) {
     const { error: insErr } = await supabase.from("stock_snapshots").insert(inserts);
     if (insErr) return { ok: false, error: `Could not save stock rows: ${insErr.message}` };
-    imported = inserts.length;
+    // Count only rows that came from the file; zero-fills are reported separately.
+    imported = inserts.length - zeroFilled;
   }
 
   revalidatePath("/stock");
@@ -234,6 +256,7 @@ export async function importStock(formData: FormData): Promise<ImportStockResult
     ok: true,
     imported,
     totalUnits,
+    zeroFilled,
     unknownSkus: [...unknownAgg.entries()].map(([sku, qty]) => ({ sku, qty })),
     snapshotDate: snapshotDateInput,
   };
