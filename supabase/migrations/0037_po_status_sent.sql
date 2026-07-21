@@ -1,0 +1,13 @@
+-- ============================================================
+-- Migration 0037 — "Sent" PO status (2026-07-21)
+-- ============================================================
+-- The hand-off chain had no state for "PO issued and emailed to the supplier,
+-- but nothing has shipped yet". A bulk import pushed 53 POs straight to SHIPPED,
+-- which overstates progress and hides which orders are still awaiting shipment.
+--
+-- New chain: DRAFT -> SENT -> PO_APPROVED -> INVOICE_RECEIVED -> SHIPPED -> RECEIVED
+--
+-- NOTE: ALTER TYPE ... ADD VALUE cannot run in the same transaction that then
+-- uses the new label, so this file is applied in two steps (see 0037b below).
+-- ============================================================
+ALTER TYPE public.po_status ADD VALUE IF NOT EXISTS 'SENT' AFTER 'DRAFT';
