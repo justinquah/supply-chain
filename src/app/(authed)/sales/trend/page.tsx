@@ -365,8 +365,9 @@ function InsightList({
           {items.map((it, i) => (
             <li key={it.label + i} className="flex items-center justify-between gap-2 py-1.5">
               <div className="min-w-0">
-                <div className="text-sm text-gray-700 truncate">{it.label}</div>
-                {it.sku && <div className="text-[10px] text-gray-400 font-mono truncate">{it.sku}</div>}
+                <div className="text-sm text-gray-700 truncate" title={it.sku || undefined}>
+                  {it.label}
+                </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <Sparkline values={it.series} dir={it.mom.dir} width={64} height={20} />

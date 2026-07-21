@@ -288,9 +288,13 @@ export function SalesTrendTable({
                                   key={p.id}
                                   className="border-b border-gray-100 bg-gray-50/40 text-gray-600"
                                 >
-                                  <td className="py-1.5 pl-12 pr-3 sticky left-0 z-10 bg-gray-50">
+                                  {/* SKU is not shown — the variation name already
+                                      identifies the row. Full code on hover. */}
+                                  <td
+                                    className="py-1.5 pl-12 pr-3 sticky left-0 z-10 bg-gray-50"
+                                    title={p.sku}
+                                  >
                                     {p.variation || p.name}
-                                    <span className="text-xs text-gray-400 ml-2">{p.sku}</span>
                                   </td>
                                   <td className="py-1.5 px-3 text-center">
                                     <Sparkline values={pSeries} dir={pMom.dir} />
