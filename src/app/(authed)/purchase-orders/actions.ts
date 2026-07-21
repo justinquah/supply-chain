@@ -5,6 +5,7 @@ import { createClient, getCurrentUser, requireRole } from "@/lib/supabase/server
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   PO_DRAFT_CREATORS,
+  PO_WORKFLOW_STATES,
   canActOnState,
   isClearanceStatus,
   recomputeBalanceDue,
@@ -266,6 +267,67 @@ export async function uploadPoDocument(
   const supabase = await createClient();
   const upErr = await uploadDoc(supabase, poId, docType, file, profile.id);
   if (upErr) return { ok: false, error: upErr };
+
+  revalidatePath(`/purchase-orders/${poId}`);
+  revalidatePath("/purchase-orders");
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Manual status override — SCM / ADMIN only, audit-logged.
+// ---------------------------------------------------------------------------
+// The hand-off actions above each enforce a single legal transition. This is the
+// escape hatch for correcting mistakes: SCM/ADMIN may set ANY of the six
+// workflow statuses, forward or backward. It deliberately writes ONLY the status
+// column — it does not run any stage side-effects (no document gates, no
+// incoming_stock writes, no payment re-anchoring), so it cannot be used to skip
+// a gate's data capture, only its position in the chain.
+//
+// Every change is recorded in audit_log (actor_id / entity_type / entity_id /
+// action / old_value / new_value — the columns defined in migration 0001).
+// audit_log has a SELECT policy only (ADMIN/SCM read); there is no INSERT policy,
+// so the row is written with the service-role client. requireRole above is the
+// security boundary.
+export async function updatePoStatus(
+  poId: string,
+  status: string
+): Promise<{ ok: boolean; error?: string }> {
+  const profile = await requireRole("SCM", "ADMIN");
+  if (!poId) return { ok: false, error: "Missing PO" };
+
+  // Whitelist: only the six workflow labels. Anything else (including the legacy
+  // po_status enum values such as PROPOSED/ISSUED/CANCELLED) is rejected.
+  const next = String(status || "").trim().toUpperCase();
+  if (!(PO_WORKFLOW_STATES as readonly string[]).includes(next))
+    return { ok: false, error: `Invalid status: ${status}` };
+
+  const supabase = await createClient();
+  const previous = await getPoStatus(supabase, poId);
+  if (previous == null) return { ok: false, error: "Purchase order not found" };
+  if (previous === next) return { ok: true };
+
+  const { error } = await supabase
+    .from("purchase_orders")
+    .update({ status: next })
+    .eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+
+  const admin = createAdminClient();
+  const { error: auditErr } = await admin.from("audit_log").insert({
+    actor_id: profile.id,
+    entity_type: "purchase_orders",
+    entity_id: poId,
+    action: "PO_STATUS_CHANGED",
+    old_value: { status: previous },
+    new_value: { status: next },
+  });
+  // The status change already succeeded; surface a failed audit write rather
+  // than silently dropping it, but do not pretend the update did not happen.
+  if (auditErr) {
+    revalidatePath(`/purchase-orders/${poId}`);
+    revalidatePath("/purchase-orders");
+    return { ok: false, error: `Status changed, but the audit entry failed: ${auditErr.message}` };
+  }
 
   revalidatePath(`/purchase-orders/${poId}`);
   revalidatePath("/purchase-orders");

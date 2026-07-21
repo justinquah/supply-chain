@@ -7,6 +7,7 @@ import { DocBadges } from "../doc-badge";
 import { DocUpload } from "./doc-upload";
 import { Stepper } from "./stepper";
 import { StageForms } from "./stage-forms";
+import { StatusControl } from "./status-control";
 import { ShipmentForms } from "./shipment-forms";
 import { ReceiptProofLink } from "./receipt-proof-link";
 import { OceanFreightCell } from "./ocean-freight-cell";
@@ -294,8 +295,19 @@ export default async function PurchaseOrderDetailPage({
       </div>
 
       <Card>
-        <CardContent className="py-5">
+        <CardContent className="py-5 space-y-4">
           <Stepper status={poRow.status} />
+          {/* SCM/ADMIN escape hatch: correct a mis-clicked hand-off by setting
+              any workflow status, forward or backward. Audit-logged. */}
+          {isScmAdmin && (
+            <div className="border-t border-gray-100 pt-4">
+              <StatusControl poId={poRow.id} current={poRow.status} />
+              <p className="text-xs text-gray-400 mt-2">
+                SCM / Admin only. Moves the PO to any stage (forward or back) to
+                fix mistakes — the change is recorded in the audit log.
+              </p>
+            </div>
+          )}
         </CardContent>
       </Card>
 
