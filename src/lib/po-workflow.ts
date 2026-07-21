@@ -1,7 +1,7 @@
 // ============================================================
-// PO workflow — the brief's 5-state lifecycle (Phase 4)
+// PO workflow — the brief's 6-state lifecycle (Phase 4)
 // ============================================================
-// DRAFT → PO_APPROVED → INVOICE_RECEIVED → SHIPPED → RECEIVED
+// DRAFT → SENT → PO_APPROVED → INVOICE_RECEIVED → SHIPPED → RECEIVED
 //
 // This module is the single source of truth for: the ordered states, their
 // labels/colours, and WHICH role is the "actor" that drives each transition.
@@ -12,6 +12,7 @@ import type { AppRole } from "@/lib/supabase/server";
 
 export const PO_WORKFLOW_STATES = [
   "DRAFT",
+  "SENT",
   "PO_APPROVED",
   "INVOICE_RECEIVED",
   "SHIPPED",
@@ -22,6 +23,7 @@ export type PoWorkflowState = (typeof PO_WORKFLOW_STATES)[number];
 
 export const PO_WORKFLOW_LABELS: Record<string, string> = {
   DRAFT: "Draft",
+  SENT: "Sent",
   PO_APPROVED: "PO Approved",
   INVOICE_RECEIVED: "Invoice Received",
   SHIPPED: "Shipped",
@@ -31,6 +33,9 @@ export const PO_WORKFLOW_LABELS: Record<string, string> = {
 
 export const PO_WORKFLOW_COLORS: Record<string, string> = {
   DRAFT: "bg-gray-100 text-gray-700",
+  // Sky keeps SENT visually distinct from DRAFT (grey), PO_APPROVED (blue) and
+  // SHIPPED (purple) — the three states it sits nearest in the chain.
+  SENT: "bg-sky-100 text-sky-700",
   PO_APPROVED: "bg-blue-100 text-blue-700",
   INVOICE_RECEIVED: "bg-indigo-100 text-indigo-700",
   SHIPPED: "bg-purple-100 text-purple-700",
@@ -53,6 +58,13 @@ type StageDef = {
 export const PO_STAGE: Record<string, StageDef> = {
   // ACCOUNTS = FINANCE: either may approve a draft PO.
   DRAFT: { actors: ["ACCOUNTS", "FINANCE"], waitingOn: "Accounts", next: "PO_APPROVED" },
+  // SENT — the PO has gone out to the supplier and is waiting on Accounts to
+  // approve it. There is deliberately NO stage form for this state: approvePO
+  // still transitions DRAFT → PO_APPROVED, so `actors` is empty and `next` is
+  // null (canActOnState → false for everyone, including ADMIN, which keeps the
+  // detail page from rendering an empty "Your action" card). SCM/ADMIN move a
+  // SENT PO on via the manual status control (updatePoStatus).
+  SENT: { actors: [], waitingOn: "Accounts", next: null },
   PO_APPROVED: { actors: ["SCM"], waitingOn: "SCM", next: "INVOICE_RECEIVED" },
   INVOICE_RECEIVED: { actors: ["LOGISTICS"], waitingOn: "Logistics", next: "SHIPPED" },
   SHIPPED: { actors: ["WAREHOUSE"], waitingOn: "Warehouse", next: "RECEIVED" },
@@ -151,6 +163,18 @@ export function currentEtaToPort(po: EtaSource): string | null {
  */
 export function paymentAnchorDate(po: EtaSource): string | null {
   return po.actual_eta ?? currentEtaToPort(po);
+}
+
+/**
+ * The single "Expected ETA" surfaced in list views: the most authoritative
+ * arrival date known for the PO. Actual arrival wins, then Logistics' estimate,
+ * then the supplier's, then SCM's ideal target. Returns 'YYYY-MM-DD' or null.
+ *
+ * Same precedence as paymentAnchorDate() — kept as its own named export because
+ * the two are read for different reasons and may diverge later.
+ */
+export function expectedEta(po: EtaSource): string | null {
+  return po.actual_eta ?? po.logistics_eta ?? po.supplier_eta ?? po.targeted_eta ?? null;
 }
 
 /**
