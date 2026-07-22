@@ -8,6 +8,7 @@ import { DocUpload } from "./doc-upload";
 import { Stepper } from "./stepper";
 import { StageForms } from "./stage-forms";
 import { StatusControl } from "./status-control";
+import { ContainerForm } from "./container-form";
 import { ShipmentForms } from "./shipment-forms";
 import { ReceiptProofLink } from "./receipt-proof-link";
 import { OceanFreightCell } from "./ocean-freight-cell";
@@ -95,7 +96,7 @@ export default async function PurchaseOrderDetailPage({
             "expected_invoice_amount, deposit_percent, payment_terms, deposit_due_date, balance_due_date, " +
             "invoice_amount, invoice_number, invoice_date, targeted_eta, actual_eta, notes, created_at, " +
             "etd, supplier_eta, logistics_eta, eta_to_warehouse, clearance_status, eta_delayed, delay_reason, " +
-            "container_arrived_at, unload_completed_at, received_qty, damaged_qty, receipt_remark, receipt_proof_path, " +
+            "container_number, container_arrived_at, unload_completed_at, received_qty, damaged_qty, receipt_remark, receipt_proof_path, " +
             "ocean_freight_cost, ocean_freight_currency, " +
             // supplier_contact_emails / supplier_cc_emails drive the "Email
             // supplier" mailto draft. profiles.email is the supplier's LOGIN
@@ -381,6 +382,20 @@ export default async function PurchaseOrderDetailPage({
         </CardHeader>
         <CardContent className="space-y-4">
           <ShipmentForms data={shipmentData} caps={shipmentCaps} />
+          {isLogistics ? (
+            <div className="border-t border-gray-100 pt-4">
+              <ContainerForm
+                poId={poRow.id}
+                current={(poRow.container_number as string | null) ?? null}
+              />
+            </div>
+          ) : (
+            poRow.container_number && (
+              <p className="text-sm text-gray-600">
+                Container: <span className="font-medium">{poRow.container_number}</span>
+              </p>
+            )
+          )}
           {isScmAdmin && (
             <div className="border-t border-gray-100 pt-4">
               <EmailSupplierButton

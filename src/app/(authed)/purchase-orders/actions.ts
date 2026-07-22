@@ -401,6 +401,50 @@ export async function updatePoStatus(
   return { ok: true };
 }
 
+// ---------------------------------------------------------------------------
+// Container number — SCM / ADMIN / LOGISTICS (Logistics own BL/clearance).
+// ---------------------------------------------------------------------------
+export async function updateContainerNumber(
+  poId: string,
+  containerNumber: string
+): Promise<{ ok: boolean; error?: string }> {
+  const profile = await requireRole("SCM", "ADMIN", "LOGISTICS");
+  if (!poId) return { ok: false, error: "Missing PO" };
+
+  // Free text (some POs share/split containers) — trim; empty clears it.
+  const value = String(containerNumber ?? "").trim() || null;
+
+  const supabase = await createClient();
+  const { data: poRow } = await supabase
+    .from("purchase_orders")
+    .select("container_number")
+    .eq("id", poId)
+    .maybeSingle();
+  if (!poRow) return { ok: false, error: "Purchase order not found" };
+  const previous = (poRow.container_number as string | null) ?? null;
+  if (previous === value) return { ok: true };
+
+  const { error } = await supabase
+    .from("purchase_orders")
+    .update({ container_number: value })
+    .eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+
+  const admin = createAdminClient();
+  await admin.from("audit_log").insert({
+    actor_id: profile.id,
+    entity_type: "purchase_orders",
+    entity_id: poId,
+    action: "PO_CONTAINER_CHANGED",
+    old_value: { container_number: previous },
+    new_value: { container_number: value },
+  });
+
+  revalidatePath(`/purchase-orders/${poId}`);
+  revalidatePath("/purchase-orders");
+  return { ok: true };
+}
+
 // Generate short-lived signed URLs for a PO's documents (private buckets).
 export async function getDocUrl(filePath: string): Promise<string | null> {
   const supabase = await createClient();
