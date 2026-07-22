@@ -407,6 +407,7 @@ export default async function PurchaseOrderDetailPage({
                 disabledReason={
                   shipmentData.targeted_eta ? null : "Set a target ETA first"
                 }
+                markSentPoId={poRow.id}
               />
             </div>
           )}
@@ -428,7 +429,8 @@ export default async function PurchaseOrderDetailPage({
       </Card>
 
       {/* Goods receipt (WHS-01/02/04) — shown once any receipt data exists */}
-      {(poRow.status === "RECEIVED" ||
+      {(poRow.status === "COMPLETED" ||
+        poRow.status === "RECEIVED" || // legacy label
         poRow.container_arrived_at ||
         poRow.unload_completed_at) && (
         <Card>
@@ -562,9 +564,9 @@ export default async function PurchaseOrderDetailPage({
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {poRow.status === "RECEIVED" ? (
+          {poRow.status === "COMPLETED" || poRow.status === "RECEIVED" ? (
             <p className="text-sm text-emerald-700">
-              Goods received. This PO has completed its workflow.
+              Goods received and inbounded. This PO is completed.
             </p>
           ) : poRow.status === "CANCELLED" ? (
             <p className="text-sm text-red-600">This PO was cancelled.</p>

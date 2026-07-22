@@ -274,10 +274,11 @@ export async function uploadPoDocument(
   if (upErr) return { ok: false, error: upErr };
 
   // Doc-driven status: the uploaded document IS the evidence of the hand-off.
-  //   PO PDF            → the PO went to the supplier     → at least SENT
-  //   Supplier invoice  → the invoice is in hand          → INVOICE_RECEIVED
+  //   PO PDF            → the PO exists in the system     → CREATED
+  //   Supplier invoice  → the PO reached the supplier     → at least SENT
   //   BL                → goods are loaded on the vessel  → SHIPPED
   // Forward-only: never downgrade a PO that is already further along.
+  // (PO_APPROVED/INVOICE_RECEIVED are legacy labels, treated as pre-SHIPPED.)
   const { data: poRow } = await supabase
     .from("purchase_orders")
     .select("status")
@@ -285,15 +286,15 @@ export async function uploadPoDocument(
     .maybeSingle();
   const cur = String(poRow?.status ?? "");
   let target: string | null = null;
-  if (docType === "PO_PDF" && cur === "DRAFT") target = "SENT";
+  if (docType === "PO_PDF" && cur === "DRAFT") target = "CREATED";
   if (
     docType === "SUPPLIER_INVOICE" &&
-    ["DRAFT", "SENT", "PO_APPROVED"].includes(cur)
+    ["DRAFT", "CREATED", "PO_APPROVED"].includes(cur)
   )
-    target = "INVOICE_RECEIVED";
+    target = "SENT";
   if (
     docType === "BL" &&
-    ["DRAFT", "SENT", "PO_APPROVED", "INVOICE_RECEIVED"].includes(cur)
+    ["DRAFT", "CREATED", "SENT", "PO_APPROVED", "INVOICE_RECEIVED"].includes(cur)
   )
     target = "SHIPPED";
 
@@ -370,13 +371,13 @@ export async function updatePoStatus(
   // them to ARRIVED — so a manual jump to RECEIVED must do the same, or the
   // units would show as arriving forever. Symmetrically, moving a RECEIVED PO
   // backwards puts its lines back in transit.
-  if (next === "RECEIVED") {
+  if (next === "COMPLETED") {
     await admin
       .from("incoming_stock")
       .update({ status: "ARRIVED" })
       .eq("po_id", poId)
       .eq("status", "EXPECTED");
-  } else if (previous === "RECEIVED") {
+  } else if (previous === "COMPLETED" || previous === "RECEIVED") {
     await admin
       .from("incoming_stock")
       .update({ status: "EXPECTED" })
@@ -404,6 +405,43 @@ export async function updatePoStatus(
   revalidatePath("/purchase-orders");
   // Incoming columns on the dashboard change when lines flip EXPECTED/ARRIVED.
   revalidatePath("/dashboard");
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// CREATED → SENT — fired when SCM opens the "Email supplier — PO issued" draft
+// (or SCM can set it manually via the status control). Forward-only.
+// ---------------------------------------------------------------------------
+export async function markPoSent(
+  poId: string
+): Promise<{ ok: boolean; error?: string }> {
+  const profile = await requireRole("SCM", "ADMIN");
+  if (!poId) return { ok: false, error: "Missing PO" };
+
+  const supabase = await createClient();
+  const previous = await getPoStatus(supabase, poId);
+  if (previous == null) return { ok: false, error: "Purchase order not found" };
+  // Only DRAFT/CREATED move — a PO already Sent or further along is untouched.
+  if (!["DRAFT", "CREATED"].includes(previous)) return { ok: true };
+
+  const { error } = await supabase
+    .from("purchase_orders")
+    .update({ status: "SENT" })
+    .eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+
+  const admin = createAdminClient();
+  await admin.from("audit_log").insert({
+    actor_id: profile.id,
+    entity_type: "purchase_orders",
+    entity_id: poId,
+    action: "PO_STATUS_CHANGED",
+    old_value: { status: previous },
+    new_value: { status: "SENT", trigger: "email_supplier_button" },
+  });
+
+  revalidatePath(`/purchase-orders/${poId}`);
+  revalidatePath("/purchase-orders");
   return { ok: true };
 }
 
@@ -692,7 +730,8 @@ export async function updatePoPaymentRule(
 }
 
 // ---------------------------------------------------------------------------
-// DRAFT → PO_APPROVED — ACCOUNTS / ADMIN upload signed PO PDF, set po_number + targeted_eta
+// DRAFT → CREATED — FINANCE/ACCOUNTS / ADMIN create the PO in the system:
+// upload the signed PO PDF, set po_number + targeted_eta.
 // ---------------------------------------------------------------------------
 export async function approvePO(formData: FormData): Promise<ActionResult> {
   const profile = await getCurrentUser();
@@ -706,7 +745,7 @@ export async function approvePO(formData: FormData): Promise<ActionResult> {
   if (status !== "DRAFT")
     return { ok: false, error: `This action is only valid from Draft (current: ${status})` };
   if (!canActOnState(profile.role, "DRAFT"))
-    return { ok: false, error: "Only Accounts or Admin can approve a PO" };
+    return { ok: false, error: "Only Finance/Accounts or Admin can create the PO" };
 
   const poNumber = String(formData.get("po_number") || "").trim();
   const targetedEta = String(formData.get("targeted_eta") || "").trim() || null;
@@ -723,7 +762,7 @@ export async function approvePO(formData: FormData): Promise<ActionResult> {
     .update({
       po_number: poNumber,
       targeted_eta: targetedEta,
-      status: "PO_APPROVED",
+      status: "CREATED",
       approved_by: profile.id,
       approved_at: new Date().toISOString(),
     })
@@ -736,7 +775,9 @@ export async function approvePO(formData: FormData): Promise<ActionResult> {
 }
 
 // ---------------------------------------------------------------------------
-// PO_APPROVED → INVOICE_RECEIVED — SCM / ADMIN upload supplier invoice + key amount/number/date
+// Record supplier invoice — SCM / ADMIN key amount/number/date + upload the file.
+// No longer its own status: recording from Draft/Created implies the PO reached
+// the supplier, so those advance to SENT; later statuses are left untouched.
 // ---------------------------------------------------------------------------
 export async function recordInvoice(formData: FormData): Promise<ActionResult> {
   const profile = await getCurrentUser();
@@ -747,9 +788,9 @@ export async function recordInvoice(formData: FormData): Promise<ActionResult> {
   if (!poId) return { ok: false, error: "Missing PO" };
 
   const status = await getPoStatus(supabase, poId);
-  if (status !== "PO_APPROVED")
-    return { ok: false, error: `This action is only valid from PO Approved (current: ${status})` };
-  if (!canActOnState(profile.role, "PO_APPROVED"))
+  if (!["DRAFT", "CREATED", "SENT", "PO_APPROVED"].includes(String(status)))
+    return { ok: false, error: `The invoice is recorded before shipping (current: ${status})` };
+  if (!["SCM", "ADMIN"].includes(profile.role))
     return { ok: false, error: "Only SCM or Admin can record the supplier invoice" };
 
   const invoiceNumber = String(formData.get("invoice_number") || "").trim();
@@ -772,8 +813,10 @@ export async function recordInvoice(formData: FormData): Promise<ActionResult> {
     invoice_number: invoiceNumber,
     invoice_amount: invoiceAmount,
     invoice_date: invoiceDate,
-    status: "INVOICE_RECEIVED",
   };
+  // Forward-only nudge: an invoice in hand implies the PO reached the supplier.
+  if (["DRAFT", "CREATED", "PO_APPROVED"].includes(String(status)))
+    update.status = "SENT";
   if (paymentTerms) update.payment_terms = paymentTerms;
 
   const { error } = await supabase.from("purchase_orders").update(update).eq("id", poId);
@@ -785,7 +828,7 @@ export async function recordInvoice(formData: FormData): Promise<ActionResult> {
 }
 
 // ---------------------------------------------------------------------------
-// INVOICE_RECEIVED → SHIPPED — LOGISTICS / ADMIN upload BL + K1_FINAL, set actual_eta
+// SENT → SHIPPED — LOGISTICS / ADMIN upload BL + K1_FINAL, set actual_eta
 // ---------------------------------------------------------------------------
 export async function markShipped(formData: FormData): Promise<ActionResult> {
   const profile = await getCurrentUser();
@@ -796,9 +839,9 @@ export async function markShipped(formData: FormData): Promise<ActionResult> {
   if (!poId) return { ok: false, error: "Missing PO" };
 
   const status = await getPoStatus(supabase, poId);
-  if (status !== "INVOICE_RECEIVED")
-    return { ok: false, error: `This action is only valid from Invoice Received (current: ${status})` };
-  if (!canActOnState(profile.role, "INVOICE_RECEIVED"))
+  if (status !== "SENT" && status !== "INVOICE_RECEIVED") // legacy rows accepted
+    return { ok: false, error: `This action is only valid from Sent (current: ${status})` };
+  if (!canActOnState(profile.role, "SENT"))
     return { ok: false, error: "Only Logistics or Admin can mark a PO shipped" };
 
   const actualEta = String(formData.get("actual_eta") || "").trim() || null;
@@ -1015,7 +1058,7 @@ export async function markReceived(formData: FormData): Promise<ActionResult> {
     return { ok: false, error: `Received recorded but failed to clear incoming stock: ${arrivedErr.message}` };
 
   const update: Record<string, unknown> = {
-    status: "RECEIVED",
+    status: "COMPLETED",
     clearance_status: "RECEIVED",
     received_qty: sawAnyQty ? aggReceived : null,
     damaged_qty: sawAnyQty ? aggDamaged : null,

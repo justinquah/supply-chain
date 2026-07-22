@@ -205,12 +205,13 @@ export function StageForms({
   products,
   receivingLines,
 }: Props) {
-  // DRAFT → PO_APPROVED (Accounts/Admin)
+  // DRAFT → CREATED (Finance/Accounts/Admin create the PO in the system)
   if (status === "DRAFT") {
     return (
-      <StageForm poId={poId} action={approvePO} submitLabel="Approve PO">
+      <StageForm poId={poId} action={approvePO} submitLabel="Create PO">
         <p className="text-sm text-gray-600">
-          Upload the signed PO PDF and set the PO number and targeted ETA.
+          Create the PO in the system: upload the signed PO PDF and set the PO
+          number and targeted ETA. SCM then sends it to the supplier.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field label="PO number *">
@@ -225,7 +226,8 @@ export function StageForms({
     );
   }
 
-  // PO_APPROVED → INVOICE_RECEIVED (SCM/Admin)
+  // Invoice recording is no longer its own status — it renders as an optional
+  // form at SENT (below). Legacy PO_APPROVED rows still get it standalone.
   if (status === "PO_APPROVED") {
     return (
       <StageForm poId={poId} action={recordInvoice} submitLabel="Record invoice">
@@ -263,9 +265,11 @@ export function StageForms({
     );
   }
 
-  // INVOICE_RECEIVED → SHIPPED (Logistics/Admin)
-  if (status === "INVOICE_RECEIVED") {
+  // SENT → SHIPPED (Logistics/Admin). The supplier invoice can be recorded
+  // here too (optional) since Invoice Received is no longer its own status.
+  if (status === "SENT") {
     return (
+      <div className="space-y-6">
       <StageForm poId={poId} action={markShipped} submitLabel="Mark shipped">
         <p className="text-sm text-gray-600">
           Upload the Bill of Lading and final K1, then set the actual ETA.
@@ -298,17 +302,51 @@ export function StageForms({
           replaces any lines already captured for this PO.
         </p>
       </StageForm>
+      <StageForm poId={poId} action={recordInvoice} submitLabel="Record invoice">
+        <p className="text-sm text-gray-600">
+          Optional: record the supplier invoice (amount, number, date) when it
+          arrives. This does not change the PO&rsquo;s status.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <Field label="Invoice number *">
+            <input name="invoice_number" required className={inputCls} placeholder="INV-..." />
+          </Field>
+          <Field label="Invoice amount *">
+            <input
+              name="invoice_amount"
+              type="number"
+              step="0.01"
+              required
+              className={inputCls}
+              placeholder="0.00"
+            />
+          </Field>
+          <Field label="Invoice date">
+            <input name="invoice_date" type="date" className={inputCls} />
+          </Field>
+          <Field label="Payment terms (confirm)">
+            <input
+              name="payment_terms"
+              className={inputCls}
+              defaultValue={paymentTerms ?? ""}
+              placeholder="confirm or amend"
+            />
+          </Field>
+        </div>
+        <FileField label="Supplier invoice" name="file_invoice" required />
+      </StageForm>
+      </div>
     );
   }
 
-  // SHIPPED → RECEIVED (Warehouse/Admin) — GATED
+  // SHIPPED → COMPLETED (Warehouse/Admin) — GATED
   if (status === "SHIPPED") {
     const blocked = !hasBl || !hasK1 || balanceRemaining !== 0;
     return (
       <div className="space-y-4">
         <p className="text-sm text-gray-600">
-          Confirm goods received. This is gated: both BL and K1 must be on file and
-          the balance must be fully paid.
+          Confirm goods received and inbounded. This is gated: both BL and K1 must
+          be on file and the balance must be fully paid.
         </p>
         <ul className="text-sm space-y-1">
           <GateRow ok={hasBl} label="Bill of Lading uploaded" />
@@ -325,7 +363,7 @@ export function StageForms({
             }
           />
         </ul>
-        <StageForm poId={poId} action={markReceived} submitLabel="Mark received">
+        <StageForm poId={poId} action={markReceived} submitLabel="Mark completed">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Container arrived">
               <input name="container_arrived_at" type="date" className={inputCls} />

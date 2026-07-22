@@ -42,6 +42,7 @@ export default async function WarehousePage() {
         "unload_completed_at, supplier:profiles!supplier_id(name, company_name)"
     )
     .neq("status", "RECEIVED")
+    .neq("status", "COMPLETED")
     .neq("status", "CANCELLED")
     .order("created_at", { ascending: false });
 

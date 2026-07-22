@@ -4,9 +4,11 @@
 // a mailto: link. The app never sends the mail; the human reviews the draft,
 // attaches the document, and presses Send.
 
+import { useRouter } from "next/navigation";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { buildMailto, type SupplierRecipients } from "@/lib/supplier-email";
+import { markPoSent } from "./actions";
 
 type Size = "xs" | "sm" | "default";
 
@@ -19,6 +21,7 @@ export function EmailSupplierButton({
   disabledReason,
   size = "sm",
   className,
+  markSentPoId,
 }: {
   recipients: SupplierRecipients;
   subject: string;
@@ -30,7 +33,14 @@ export function EmailSupplierButton({
   disabledReason?: string | null;
   size?: Size;
   className?: string;
+  /**
+   * When set, opening the draft also advances that PO to SENT (forward-only —
+   * the server action ignores POs already Sent or further along). Used by the
+   * "PO issued" button so emailing the supplier IS the send hand-off.
+   */
+  markSentPoId?: string;
 }) {
+  const router = useRouter();
   const href = buildMailto(recipients, subject, body);
   // No contact address on file => nothing to draft to.
   const reason =
@@ -49,7 +59,16 @@ export function EmailSupplierButton({
           </button>
         </span>
       ) : (
-        <a href={href} className={classes}>
+        <a
+          href={href}
+          className={classes}
+          onClick={() => {
+            if (!markSentPoId) return;
+            // Fire-and-forget: the mailto opens regardless; the status nudge is
+            // forward-only and any failure just leaves the status unchanged.
+            void markPoSent(markSentPoId).then(() => router.refresh());
+          }}
+        >
           {label}
         </a>
       )}

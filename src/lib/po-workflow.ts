@@ -1,44 +1,54 @@
 // ============================================================
-// PO workflow — the brief's 6-state lifecycle (Phase 4)
+// PO workflow — the 5-state lifecycle (finalised 2026-07-22)
 // ============================================================
-// DRAFT → SENT → PO_APPROVED → INVOICE_RECEIVED → SHIPPED → RECEIVED
+// DRAFT     SCM proposes the order
+// CREATED   Finance/Admin creates the PO in the system + uploads the PO PDF
+// SENT      SCM sent it to the supplier (email function or manual update)
+// SHIPPED   BL uploaded — goods on the water
+// COMPLETED goods inbounded to our system (warehouse receive)
 //
 // This module is the single source of truth for: the ordered states, their
 // labels/colours, and WHICH role is the "actor" that drives each transition.
 // Server actions enforce the same actor table app-side (RLS is the coarse gate).
+// PO_APPROVED / INVOICE_RECEIVED / RECEIVED are legacy enum labels — remapped
+// in migration 0040 but kept in the label/colour maps for stray rows.
 // ============================================================
 
 import type { AppRole } from "@/lib/supabase/server";
 
 export const PO_WORKFLOW_STATES = [
   "DRAFT",
+  "CREATED",
   "SENT",
-  "PO_APPROVED",
-  "INVOICE_RECEIVED",
   "SHIPPED",
-  "RECEIVED",
+  "COMPLETED",
 ] as const;
 
 export type PoWorkflowState = (typeof PO_WORKFLOW_STATES)[number];
 
 export const PO_WORKFLOW_LABELS: Record<string, string> = {
   DRAFT: "Draft",
+  CREATED: "Created",
   SENT: "Sent",
+  SHIPPED: "Shipped",
+  COMPLETED: "Completed",
+  // Legacy labels — no longer part of the chain, kept for stray rows.
   PO_APPROVED: "PO Approved",
   INVOICE_RECEIVED: "Invoice Received",
-  SHIPPED: "Shipped",
   RECEIVED: "Received",
   CANCELLED: "Cancelled",
 };
 
 export const PO_WORKFLOW_COLORS: Record<string, string> = {
   DRAFT: "bg-gray-100 text-gray-700",
-  // Sky keeps SENT visually distinct from DRAFT (grey), PO_APPROVED (blue) and
-  // SHIPPED (purple) — the three states it sits nearest in the chain.
+  CREATED: "bg-blue-100 text-blue-700",
+  // Sky keeps SENT visually distinct from CREATED (blue) and SHIPPED (purple).
   SENT: "bg-sky-100 text-sky-700",
+  SHIPPED: "bg-purple-100 text-purple-700",
+  COMPLETED: "bg-emerald-100 text-emerald-700",
+  // Legacy colours.
   PO_APPROVED: "bg-blue-100 text-blue-700",
   INVOICE_RECEIVED: "bg-indigo-100 text-indigo-700",
-  SHIPPED: "bg-purple-100 text-purple-700",
   RECEIVED: "bg-emerald-100 text-emerald-700",
   CANCELLED: "bg-red-100 text-red-700",
 };
@@ -56,19 +66,18 @@ type StageDef = {
 };
 
 export const PO_STAGE: Record<string, StageDef> = {
-  // ACCOUNTS = FINANCE: either may approve a draft PO.
-  DRAFT: { actors: ["ACCOUNTS", "FINANCE"], waitingOn: "Accounts", next: "PO_APPROVED" },
-  // SENT — the PO has gone out to the supplier and is waiting on Accounts to
-  // approve it. There is deliberately NO stage form for this state: approvePO
-  // still transitions DRAFT → PO_APPROVED, so `actors` is empty and `next` is
-  // null (canActOnState → false for everyone, including ADMIN, which keeps the
-  // detail page from rendering an empty "Your action" card). SCM/ADMIN move a
-  // SENT PO on via the manual status control (updatePoStatus).
-  SENT: { actors: [], waitingOn: "Accounts", next: null },
-  PO_APPROVED: { actors: ["SCM"], waitingOn: "SCM", next: "INVOICE_RECEIVED" },
-  INVOICE_RECEIVED: { actors: ["LOGISTICS"], waitingOn: "Logistics", next: "SHIPPED" },
-  SHIPPED: { actors: ["WAREHOUSE"], waitingOn: "Warehouse", next: "RECEIVED" },
-  RECEIVED: { actors: [], waitingOn: "", next: null }, // terminal
+  // ACCOUNTS = FINANCE: they create the PO in the system (upload the signed
+  // PO PDF, set the number + target ETA) — the createPo stage form.
+  DRAFT: { actors: ["ACCOUNTS", "FINANCE"], waitingOn: "Finance", next: "CREATED" },
+  // CREATED → SENT is SCM's move: the "Email supplier" button (or the manual
+  // status control). No stage form — actors empty keeps the detail page from
+  // rendering an empty "Your action" card.
+  CREATED: { actors: [], waitingOn: "SCM (send to supplier)", next: null },
+  // SENT → SHIPPED: Logistics upload BL (+K1) and set the actual ETA. Uploading
+  // the BL via the badges also auto-advances (see uploadPoDocument).
+  SENT: { actors: ["LOGISTICS"], waitingOn: "Logistics", next: "SHIPPED" },
+  SHIPPED: { actors: ["WAREHOUSE"], waitingOn: "Warehouse", next: "COMPLETED" },
+  COMPLETED: { actors: [], waitingOn: "", next: null }, // terminal
 };
 
 /** True when `role` may perform the stage action for `state` (ADMIN overrides). */
@@ -137,14 +146,13 @@ export function isClearanceStatus(s: string | null | undefined): s is ClearanceS
   return !!s && (CLEARANCE_STATUSES as readonly string[]).includes(s);
 }
 
-// The minimal shape needed by the ETA / payment helpers below. Any object with
-// these date fields (a PO row, a supplier PO row, a partial patch) works.
+// The minimal shape needed by the ETA helpers below. Any object with these date
+// fields (a PO row, a supplier PO row, a partial patch) works.
 export type EtaSource = {
   targeted_eta?: string | null;
   supplier_eta?: string | null;
   logistics_eta?: string | null;
   actual_eta?: string | null;
-  payment_terms?: string | null;
 };
 
 /**
@@ -157,60 +165,19 @@ export function currentEtaToPort(po: EtaSource): string | null {
 }
 
 /**
- * Payment anchor date — the actual port arrival if known, else the current
- * ETA-to-port estimate. Balance payment terms count from this date (§5).
- * Returns a plain 'YYYY-MM-DD' string or null.
- */
-export function paymentAnchorDate(po: EtaSource): string | null {
-  return po.actual_eta ?? currentEtaToPort(po);
-}
-
-/**
  * The single "Expected ETA" surfaced in list views: the most authoritative
  * arrival date known for the PO. Actual arrival wins, then Logistics' estimate,
  * then the supplier's, then SCM's ideal target. Returns 'YYYY-MM-DD' or null.
  *
- * Same precedence as paymentAnchorDate() — kept as its own named export because
- * the two are read for different reasons and may diverge later.
+ * Same COALESCE precedence the DB trigger trg_po_payment_terms uses to anchor
+ * the payment due dates (see lib/payment-terms.ts → effectiveEta).
  */
 export function expectedEta(po: EtaSource): string | null {
   return po.actual_eta ?? po.logistics_eta ?? po.supplier_eta ?? po.targeted_eta ?? null;
 }
 
-/**
- * Parse a day-count from a free-text payment-terms string.
- * Prefers an explicit "N day(s)" mention; falls back to a bare integer.
- * Returns the integer number of days, or null if none is parseable.
- */
-export function parsePaymentTermDays(terms: string | null | undefined): number | null {
-  if (!terms) return null;
-  const withDay = terms.match(/(\d+)\s*day/i);
-  if (withDay) return Number(withDay[1]);
-  const bare = terms.match(/\d+/);
-  if (bare) return Number(bare[0]);
-  return null;
-}
-
-/**
- * Recompute a PO's balance_due_date from the payment anchor (§5).
- *
- * Returns the new 'YYYY-MM-DD' date when BOTH a day-count is parseable from
- * `payment_terms` AND a payment anchor date exists; otherwise returns null so
- * callers leave the manually-entered balance_due_date untouched.
- *
- * The date arithmetic uses a UTC-midnight anchor to stay off-by-one-safe: DATE
- * columns are treated as plain calendar dates (mirrors permits/expiry.ts).
- */
-export function recomputeBalanceDue(po: EtaSource): string | null {
-  const days = parsePaymentTermDays(po.payment_terms);
-  if (days == null) return null;
-  const anchor = paymentAnchorDate(po);
-  if (!anchor) return null;
-  const anchorMs = new Date(`${anchor}T00:00:00Z`).getTime();
-  if (Number.isNaN(anchorMs)) return null;
-  const due = new Date(anchorMs + days * 86_400_000);
-  const y = due.getUTCFullYear();
-  const m = String(due.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(due.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
+// NOTE: the old parsePaymentTermDays() / recomputeBalanceDue() helpers were
+// removed. Payment due dates are no longer derived in app code — they are
+// DERIVED COLUMNS owned by the DB trigger trg_po_payment_terms, computed from
+// the structured rule (deposit_percent / deposit_lead_months /
+// balance_days_after_eta). See lib/payment-terms.ts.

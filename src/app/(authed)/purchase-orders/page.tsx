@@ -170,8 +170,8 @@ export default async function PurchaseOrdersPage({
         <div>
           <h1 className="text-2xl font-semibold">Purchase Orders</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Every PO tracked through its hand-offs: Draft → Sent → PO Approved →
-            Invoice Received → Shipped → Received
+            Every PO tracked through its hand-offs: Draft → Created → Sent →
+            Shipped → Completed
           </p>
         </div>
         {canDraft && (
