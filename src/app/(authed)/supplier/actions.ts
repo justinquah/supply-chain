@@ -3,7 +3,6 @@
 import { revalidatePath } from "next/cache";
 import { createClient, requireRole } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { recomputeBalanceDue } from "@/lib/po-workflow";
 
 // Validate a plain YYYY-MM-DD date string (or empty -> null).
 function parseDate(raw: string | null | undefined): string | null {
@@ -22,8 +21,11 @@ function parseDate(raw: string | null | undefined): string | null {
  *   2. verifies the PO belongs to the caller (supplier_id = me.id),
  *   3. writes ONLY etd + supplier_eta via the admin client (RLS would block a
  *      supplier UPDATE on purchase_orders; ownership is already proven above),
- *   4. re-anchors balance_due_date from the payment anchor (§5) when parseable,
- *   5. revalidates /supplier.
+ *   4. revalidates /supplier.
+ *
+ * Writing supplier_eta re-fires the DB trigger trg_po_payment_terms, which
+ * re-anchors deposit_due_date / balance_due_date from the new effective ETA
+ * when the PO carries a payment rule. This action never writes those columns.
  * A caller who does not own the PO gets {ok:false} — never a silent write.
  */
 export async function updateSupplierDates(
@@ -48,30 +50,15 @@ export async function updateSupplierDates(
 
   const admin = createAdminClient();
 
-  // Load current ETA/payment context to re-anchor balance_due_date (§5).
-  const { data: ctx } = await admin
-    .from("purchase_orders")
-    .select("targeted_eta, supplier_eta, logistics_eta, actual_eta, payment_terms")
-    .eq("id", poId)
-    .maybeSingle();
-
-  const update: Record<string, unknown> = {
-    etd: etdValue,
-    supplier_eta: supplierEtaValue,
-  };
-  if (ctx) {
-    const newBalanceDue = recomputeBalanceDue({
-      ...(ctx as Record<string, string | null>),
-      supplier_eta: supplierEtaValue,
-    });
-    if (newBalanceDue) update.balance_due_date = newBalanceDue;
-  }
-
-  // ONLY etd + supplier_eta (+ derived balance_due_date) are written — the
-  // whitelist is enforced by this literal object, not by RLS.
+  // ONLY etd + supplier_eta are written — the whitelist is enforced by this
+  // literal object, not by RLS. The payment due dates are derived by the DB
+  // trigger and are deliberately absent here.
   const { error } = await admin
     .from("purchase_orders")
-    .update(update)
+    .update({
+      etd: etdValue,
+      supplier_eta: supplierEtaValue,
+    })
     .eq("id", poId)
     .eq("supplier_id", me.id);
   if (error) return { ok: false, error: error.message };
