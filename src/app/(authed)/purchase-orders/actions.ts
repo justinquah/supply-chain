@@ -274,8 +274,9 @@ export async function uploadPoDocument(
   if (upErr) return { ok: false, error: upErr };
 
   // Doc-driven status: the uploaded document IS the evidence of the hand-off.
-  //   PO PDF            → the PO went to the supplier   → at least SENT
-  //   Supplier invoice  → the invoice is in hand        → INVOICE_RECEIVED
+  //   PO PDF            → the PO went to the supplier     → at least SENT
+  //   Supplier invoice  → the invoice is in hand          → INVOICE_RECEIVED
+  //   BL                → goods are loaded on the vessel  → SHIPPED
   // Forward-only: never downgrade a PO that is already further along.
   const { data: poRow } = await supabase
     .from("purchase_orders")
@@ -290,6 +291,11 @@ export async function uploadPoDocument(
     ["DRAFT", "SENT", "PO_APPROVED"].includes(cur)
   )
     target = "INVOICE_RECEIVED";
+  if (
+    docType === "BL" &&
+    ["DRAFT", "SENT", "PO_APPROVED", "INVOICE_RECEIVED"].includes(cur)
+  )
+    target = "SHIPPED";
 
   if (target) {
     // Admin client: uploaders include ACCOUNTS/FINANCE/LOGISTICS, whose RLS may
