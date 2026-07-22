@@ -273,6 +273,46 @@ export async function uploadPoDocument(
   const upErr = await uploadDoc(supabase, poId, docType, file, profile.id);
   if (upErr) return { ok: false, error: upErr };
 
+  // Doc-driven status: the uploaded document IS the evidence of the hand-off.
+  //   PO PDF            → the PO went to the supplier   → at least SENT
+  //   Supplier invoice  → the invoice is in hand        → INVOICE_RECEIVED
+  // Forward-only: never downgrade a PO that is already further along.
+  const { data: poRow } = await supabase
+    .from("purchase_orders")
+    .select("status")
+    .eq("id", poId)
+    .maybeSingle();
+  const cur = String(poRow?.status ?? "");
+  let target: string | null = null;
+  if (docType === "PO_PDF" && cur === "DRAFT") target = "SENT";
+  if (
+    docType === "SUPPLIER_INVOICE" &&
+    ["DRAFT", "SENT", "PO_APPROVED"].includes(cur)
+  )
+    target = "INVOICE_RECEIVED";
+
+  if (target) {
+    // Admin client: uploaders include ACCOUNTS/FINANCE/LOGISTICS, whose RLS may
+    // not cover a purchase_orders status write. The role gate above is the boundary.
+    const admin = createAdminClient();
+    const { error: stErr } = await admin
+      .from("purchase_orders")
+      .update({ status: target })
+      .eq("id", poId);
+    if (!stErr) {
+      await admin.from("audit_log").insert({
+        actor_id: profile.id,
+        entity_type: "purchase_orders",
+        entity_id: poId,
+        action: "PO_STATUS_CHANGED",
+        old_value: { status: cur },
+        new_value: { status: target, trigger: `doc_upload:${docType}` },
+      });
+    }
+    // A failed auto-advance must not fail the upload itself — the document is
+    // already stored; SCM can still set the status from the dropdown.
+  }
+
   revalidatePath(`/purchase-orders/${poId}`);
   revalidatePath("/purchase-orders");
   return { ok: true };
