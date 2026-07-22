@@ -8,9 +8,14 @@ import {
   PO_WORKFLOW_STATES,
   canActOnState,
   isClearanceStatus,
-  recomputeBalanceDue,
-  type EtaSource,
 } from "@/lib/po-workflow";
+import {
+  readRule,
+  readSupplierDefaults,
+  validateRuleInput,
+  type PaymentRuleFields,
+  type SupplierPaymentDefaults,
+} from "@/lib/payment-terms";
 
 // doc_type -> storage bucket
 const BUCKET: Record<string, string> = {
@@ -313,6 +318,25 @@ export async function updatePoStatus(
   if (error) return { ok: false, error: error.message };
 
   const admin = createAdminClient();
+
+  // Keep incoming_stock in step with the status. The dashboard's "Incoming"
+  // columns count status='EXPECTED' lines, and the Warehouse receive flow flips
+  // them to ARRIVED — so a manual jump to RECEIVED must do the same, or the
+  // units would show as arriving forever. Symmetrically, moving a RECEIVED PO
+  // backwards puts its lines back in transit.
+  if (next === "RECEIVED") {
+    await admin
+      .from("incoming_stock")
+      .update({ status: "ARRIVED" })
+      .eq("po_id", poId)
+      .eq("status", "EXPECTED");
+  } else if (previous === "RECEIVED") {
+    await admin
+      .from("incoming_stock")
+      .update({ status: "EXPECTED" })
+      .eq("po_id", poId)
+      .eq("status", "ARRIVED");
+  }
   const { error: auditErr } = await admin.from("audit_log").insert({
     actor_id: profile.id,
     entity_type: "purchase_orders",
@@ -326,11 +350,14 @@ export async function updatePoStatus(
   if (auditErr) {
     revalidatePath(`/purchase-orders/${poId}`);
     revalidatePath("/purchase-orders");
+    revalidatePath("/dashboard");
     return { ok: false, error: `Status changed, but the audit entry failed: ${auditErr.message}` };
   }
 
   revalidatePath(`/purchase-orders/${poId}`);
   revalidatePath("/purchase-orders");
+  // Incoming columns on the dashboard change when lines flip EXPECTED/ARRIVED.
+  revalidatePath("/dashboard");
   return { ok: true };
 }
 
@@ -362,19 +389,73 @@ export async function savePurchaseOrder(formData: FormData): Promise<ActionResul
     ? Number(formData.get("expected_invoice_amount"))
     : null;
   const invoiceCurrency = String(formData.get("invoice_currency") || "MYR").trim() || "MYR";
-  const depositPercent = formData.get("deposit_percent")
-    ? Number(formData.get("deposit_percent"))
-    : null;
   const paymentTerms = String(formData.get("payment_terms") || "").trim() || null;
-  const depositDueDate = String(formData.get("deposit_due_date") || "").trim() || null;
-  const balanceDueDate = String(formData.get("balance_due_date") || "").trim() || null;
   const notes = String(formData.get("notes") || "").trim() || null;
   const editingId = String(formData.get("po_id") || "").trim() || null;
 
   // supplier_id is NOT NULL in the schema.
   if (!supplierId) return { ok: false, error: "Supplier is required" };
-  if (depositPercent != null && (depositPercent < 0 || depositPercent > 100))
-    return { ok: false, error: "Deposit % must be between 0 and 100" };
+
+  // --- Structured payment rule -------------------------------------------
+  // Only the RULE fields are ever written. deposit_due_date / balance_due_date
+  // are derived by the DB trigger trg_po_payment_terms and must not be written
+  // from app code.
+  const blankToNull = (name: string): string | null => {
+    const v = String(formData.get(name) ?? "").trim();
+    return v === "" ? null : v;
+  };
+  const validated = validateRuleInput({
+    depositPercent: blankToNull("deposit_percent"),
+    depositLeadMonths: blankToNull("deposit_lead_months"),
+    balanceDaysAfterEta: blankToNull("balance_days_after_eta"),
+  });
+  if (!validated.ok) return { ok: false, error: validated.error };
+  let rule = validated.value;
+
+  const admin = createAdminClient();
+
+  // Fields the user left blank fall back to (1) the PO's current value when
+  // editing an existing draft, then (2) the supplier's default rule. A value
+  // the user actually typed — including 0 — is never overwritten.
+  if (
+    rule.depositPercent == null ||
+    rule.depositLeadMonths == null ||
+    rule.balanceDaysAfterEta == null
+  ) {
+    if (editingId) {
+      const { data: existing } = await admin
+        .from("purchase_orders")
+        .select("deposit_percent, deposit_lead_months, balance_days_after_eta")
+        .eq("id", editingId)
+        .maybeSingle();
+      const current = readRule(existing as PaymentRuleFields | null);
+      rule = {
+        depositPercent: rule.depositPercent ?? current.depositPercent,
+        depositLeadMonths: rule.depositLeadMonths ?? current.depositLeadMonths,
+        balanceDaysAfterEta: rule.balanceDaysAfterEta ?? current.balanceDaysAfterEta,
+      };
+    }
+
+    if (
+      rule.depositPercent == null ||
+      rule.depositLeadMonths == null ||
+      rule.balanceDaysAfterEta == null
+    ) {
+      const { data: supplierRow } = await admin
+        .from("profiles")
+        .select(
+          "supplier_deposit_percent, supplier_deposit_lead_months, supplier_balance_days_after_eta"
+        )
+        .eq("id", supplierId)
+        .maybeSingle();
+      const defaults = readSupplierDefaults(supplierRow as SupplierPaymentDefaults | null);
+      rule = {
+        depositPercent: rule.depositPercent ?? defaults.depositPercent,
+        depositLeadMonths: rule.depositLeadMonths ?? defaults.depositLeadMonths,
+        balanceDaysAfterEta: rule.balanceDaysAfterEta ?? defaults.balanceDaysAfterEta,
+      };
+    }
+  }
 
   const fields = {
     po_number: poNumber || null,
@@ -382,10 +463,10 @@ export async function savePurchaseOrder(formData: FormData): Promise<ActionResul
     product_group: productGroup,
     expected_invoice_amount: expectedAmount,
     invoice_currency: invoiceCurrency,
-    deposit_percent: depositPercent,
+    deposit_percent: rule.depositPercent,
+    deposit_lead_months: rule.depositLeadMonths,
+    balance_days_after_eta: rule.balanceDaysAfterEta,
     payment_terms: paymentTerms,
-    deposit_due_date: depositDueDate,
-    balance_due_date: balanceDueDate,
     notes,
   };
 
@@ -424,7 +505,6 @@ export async function savePurchaseOrder(formData: FormData): Promise<ActionResul
   // never blocks the save.
   const targetedEta = String(formData.get("targeted_eta") || "").trim() || null;
   const lines = parseProductLines(formData);
-  const admin = createAdminClient();
   const { error: delErr } = await admin.from("incoming_stock").delete().eq("po_id", poId);
   if (delErr) return { ok: false, error: `Failed to reset product lines: ${delErr.message}` };
   if (lines.length > 0) {
@@ -470,6 +550,54 @@ export async function savePurchaseOrder(formData: FormData): Promise<ActionResul
   revalidatePath("/purchase-orders");
   revalidatePath(`/purchase-orders/${poId}`);
   revalidatePath("/dashboard");
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Payment rule — SCM / ADMIN edit a PO's deposit + balance terms
+// ---------------------------------------------------------------------------
+// Writes ONLY the three RULE columns. deposit_due_date / balance_due_date are
+// recomputed by the DB trigger trg_po_payment_terms from the effective ETA
+// (COALESCE(actual_eta, logistics_eta, supplier_eta, targeted_eta)) — the app
+// never writes them. Callers re-read the PO to see the resulting dates.
+//
+// Blank/null = "no rule" (the existing manually-entered dates are left alone);
+// 0% deposit = "no deposit payable" (the trigger clears deposit_due_date).
+//
+// Gated to SCM/ADMIN — matching the who-edits-what matrix already used for the
+// SCM-owned fields on the PO detail page. Routed through the admin
+// (service-role) client because purchase_orders RLS is row-level and cannot
+// restrict columns; this literal column list is the boundary.
+export async function updatePoPaymentRule(
+  poId: string,
+  depositPercent: number | null,
+  depositLeadMonths: number | null,
+  balanceDaysAfterEta: number | null
+): Promise<ActionResult> {
+  await requireRole("SCM", "ADMIN");
+  if (!poId) return { ok: false, error: "Missing PO" };
+
+  const validated = validateRuleInput({
+    depositPercent,
+    depositLeadMonths,
+    balanceDaysAfterEta,
+  });
+  if (!validated.ok) return { ok: false, error: validated.error };
+
+  const admin = createAdminClient();
+  const { error } = await admin
+    .from("purchase_orders")
+    .update({
+      deposit_percent: validated.value.depositPercent,
+      deposit_lead_months: validated.value.depositLeadMonths,
+      balance_days_after_eta: validated.value.balanceDaysAfterEta,
+    })
+    .eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath(`/purchase-orders/${poId}`);
+  revalidatePath("/purchase-orders");
+  revalidatePath("/finance");
   return { ok: true };
 }
 
@@ -611,15 +739,17 @@ export async function markShipped(formData: FormData): Promise<ActionResult> {
     if (e) return { ok: false, error: e };
   }
 
-  // Fetch po_number + ETA/payment fields up front — needed for the
-  // incoming_stock expected_date fallback and notes, and to re-anchor the
-  // balance due date once actual_eta is set (§5).
+  // Fetch po_number + targeted_eta up front — needed for the incoming_stock
+  // expected_date fallback and notes.
   const { data: poRow } = await supabase
     .from("purchase_orders")
-    .select("po_number, targeted_eta, supplier_eta, logistics_eta, payment_terms")
+    .select("po_number, targeted_eta")
     .eq("id", poId)
     .maybeSingle();
 
+  // Writing actual_eta / logistics_eta re-fires trg_po_payment_terms, which
+  // recomputes deposit_due_date + balance_due_date when a rule is set. We must
+  // NOT write those date columns ourselves.
   const update: Record<string, unknown> = {
     actual_eta: actualEta,
     status: "SHIPPED",
@@ -628,17 +758,6 @@ export async function markShipped(formData: FormData): Promise<ActionResult> {
   };
   if (etd) update.etd = etd;
   if (logisticsEta) update.logistics_eta = logisticsEta;
-
-  // Re-anchor balance_due_date from the payment anchor (actual_eta wins). Uses
-  // the just-set actual_eta / logistics_eta over the previously-stored values.
-  const newBalanceDue = recomputeBalanceDue({
-    targeted_eta: poRow?.targeted_eta,
-    supplier_eta: poRow?.supplier_eta,
-    logistics_eta: logisticsEta ?? poRow?.logistics_eta,
-    actual_eta: actualEta,
-    payment_terms: poRow?.payment_terms,
-  });
-  if (newBalanceDue) update.balance_due_date = newBalanceDue;
 
   const { error } = await supabase
     .from("purchase_orders")
@@ -876,18 +995,11 @@ function parseDateInput(raw: FormDataEntryValue | null): string | null {
   return s;
 }
 
-// Shared: load the ETA/payment context needed to re-anchor balance_due_date.
-async function loadEtaContext(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  poId: string
-): Promise<EtaSource | null> {
-  const { data } = await supabase
-    .from("purchase_orders")
-    .select("targeted_eta, supplier_eta, logistics_eta, actual_eta, payment_terms")
-    .eq("id", poId)
-    .maybeSingle();
-  return (data as EtaSource) ?? null;
-}
+// NOTE on payment due dates: deposit_due_date / balance_due_date are DERIVED
+// columns owned by the DB trigger trg_po_payment_terms. Every ETA write below
+// re-fires that trigger, which re-anchors the due dates from the effective ETA
+// whenever the PO carries a rule (deposit_lead_months / balance_days_after_eta).
+// App code writes the ETA only — never the derived dates.
 
 function revalidatePo(poId: string) {
   revalidatePath("/purchase-orders");
@@ -921,21 +1033,17 @@ export async function updateTargetedEta(poId: string, date: string | null): Prom
     return { ok: false, error: "Only SCM or Admin can set the targeted ETA" };
   const value = parseDateInput(date);
   const supabase = await createClient();
-  // targeted_eta is the lowest-priority ETA source; only re-anchor payment when
-  // no higher-priority source (supplier/logistics) or actual arrival exists.
-  const ctx = await loadEtaContext(supabase, poId);
-  const update: Record<string, unknown> = { targeted_eta: value };
-  if (ctx) {
-    const newBalanceDue = recomputeBalanceDue({ ...ctx, targeted_eta: value });
-    if (newBalanceDue) update.balance_due_date = newBalanceDue;
-  }
-  const { error } = await supabase.from("purchase_orders").update(update).eq("id", poId);
+  const { error } = await supabase
+    .from("purchase_orders")
+    .update({ targeted_eta: value })
+    .eq("id", poId);
   if (error) return { ok: false, error: error.message };
   revalidatePo(poId);
   return { ok: true };
 }
 
-// updateLogisticsEta — LOGISTICS/SCM/ADMIN. Re-anchors payment (§5).
+// updateLogisticsEta — LOGISTICS/SCM/ADMIN. The trigger re-anchors the payment
+// due dates from the new effective ETA when the PO carries a rule.
 export async function updateLogisticsEta(poId: string, date: string | null): Promise<ActionResult> {
   const profile = await getCurrentUser();
   if (!profile) return { ok: false, error: "Not signed in" };
@@ -943,13 +1051,10 @@ export async function updateLogisticsEta(poId: string, date: string | null): Pro
     return { ok: false, error: "Only Logistics, SCM or Admin can set the logistics ETA" };
   const value = parseDateInput(date);
   const supabase = await createClient();
-  const ctx = await loadEtaContext(supabase, poId);
-  const update: Record<string, unknown> = { logistics_eta: value };
-  if (ctx) {
-    const newBalanceDue = recomputeBalanceDue({ ...ctx, logistics_eta: value });
-    if (newBalanceDue) update.balance_due_date = newBalanceDue;
-  }
-  const { error } = await supabase.from("purchase_orders").update(update).eq("id", poId);
+  const { error } = await supabase
+    .from("purchase_orders")
+    .update({ logistics_eta: value })
+    .eq("id", poId);
   if (error) return { ok: false, error: error.message };
   revalidatePo(poId);
   return { ok: true };
@@ -1137,8 +1242,9 @@ export async function applyPoTiming(
   return { ok: true };
 }
 
-// updateActualPortArrival — LOGISTICS/SCM/ADMIN. Setting it re-anchors payment
-// (§5): the actual arrival is the highest-priority payment anchor.
+// updateActualPortArrival — LOGISTICS/SCM/ADMIN. The actual arrival is the
+// highest-priority ETA source, so the trigger re-anchors the payment due dates
+// off it when the PO carries a rule.
 export async function updateActualPortArrival(poId: string, date: string | null): Promise<ActionResult> {
   const profile = await getCurrentUser();
   if (!profile) return { ok: false, error: "Not signed in" };
@@ -1146,13 +1252,10 @@ export async function updateActualPortArrival(poId: string, date: string | null)
     return { ok: false, error: "Only Logistics, SCM or Admin can set the actual port arrival" };
   const value = parseDateInput(date);
   const supabase = await createClient();
-  const ctx = await loadEtaContext(supabase, poId);
-  const update: Record<string, unknown> = { actual_eta: value };
-  if (ctx) {
-    const newBalanceDue = recomputeBalanceDue({ ...ctx, actual_eta: value });
-    if (newBalanceDue) update.balance_due_date = newBalanceDue;
-  }
-  const { error } = await supabase.from("purchase_orders").update(update).eq("id", poId);
+  const { error } = await supabase
+    .from("purchase_orders")
+    .update({ actual_eta: value })
+    .eq("id", poId);
   if (error) return { ok: false, error: error.message };
   revalidatePo(poId);
   revalidatePath("/warehouse");
