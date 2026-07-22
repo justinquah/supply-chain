@@ -64,12 +64,15 @@ export default async function DashboardPage({
 
   // Labels for the 3 incoming-arrival buckets: current month, +1, +2 (KL), with a
   // year suffix when the bucket rolls into a different year.
-  const incMonthLabels = [0, 1, 2].map((off) => {
-    const base = curMonth - 1 + off;
-    const y = curYear + Math.floor(base / 12);
-    const m = (base % 12) + 1;
-    return MONTHS[m] + (y !== curYear ? ` '${String(y).slice(2)}` : "");
-  }) as [string, string, string];
+  const incMonthLabels = [
+    ...[0, 1, 2].map((off) => {
+      const base = curMonth - 1 + off;
+      const y = curYear + Math.floor(base / 12);
+      const m = (base % 12) + 1;
+      return MONTHS[m] + (y !== curYear ? ` '${String(y).slice(2)}` : "");
+    }),
+    "Later",
+  ] as [string, string, string, string];
 
   // Use the as-of function so AMS reflects the 3 months ending at the selected month
   const [
@@ -113,13 +116,18 @@ export default async function DashboardPage({
       bucket = "thisMonth";
     } else if (monthsAhead === 1) {
       bucket = "nextMonth";
-    } else {
+    } else if (monthsAhead === 2) {
       bucket = "following";
+    } else {
+      // Everything further out. Previously this fell into "following", which made
+      // the third column read as a single month while actually holding every
+      // future arrival (Oct, Nov, Dec, Jan…) — hugely overstating that month.
+      bucket = "later";
     }
 
     const pid = row.product_id;
     if (!incomingMap[pid]) {
-      incomingMap[pid] = { thisMonth: 0, nextMonth: 0, following: 0 };
+      incomingMap[pid] = { thisMonth: 0, nextMonth: 0, following: 0, later: 0 };
     }
     incomingMap[pid][bucket] += Number(row.quantity || 0);
   }

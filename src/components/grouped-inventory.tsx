@@ -24,6 +24,9 @@ export type IncomingBuckets = {
   thisMonth: number;
   nextMonth: number;
   following: number;
+  /** Arrivals beyond the third month — kept separate so the third column is a
+      real single month and not an unbounded "everything after" catch-all. */
+  later: number;
 };
 
 const IDEAL = 1.5;
@@ -56,6 +59,7 @@ type Group = {
   incomingThis: number;
   incomingNext: number;
   incomingFollowing: number;
+  incomingLater: number;
   value: number;
   coverage: number | null;
 };
@@ -65,7 +69,7 @@ export function GroupedInventory({
   incomingMap,
   lastMonthSalesMap,
   hideValue = false,
-  incomingMonthLabels = ["This mo", "Next mo", "Following"],
+  incomingMonthLabels = ["This mo", "Next mo", "Following", "Later"],
 }: {
   products: ProductRow[];
   /** product_id → IncomingBuckets (may be absent if no incoming) */
@@ -74,8 +78,8 @@ export function GroupedInventory({
   lastMonthSalesMap?: Record<string, number>;
   /** Hide the monetary "Inv. value" column entirely (STAFF restricted view). */
   hideValue?: boolean;
-  /** Headers for the 3 incoming-arrival buckets: [this month, +1, +2]. */
-  incomingMonthLabels?: [string, string, string];
+  /** Headers for the incoming-arrival buckets: [this month, +1, +2, later]. */
+  incomingMonthLabels?: [string, string, string, string];
 }) {
   // All multi-product families start expanded
   const [open, setOpen] = useState<Record<string, boolean>>({});
@@ -84,7 +88,7 @@ export function GroupedInventory({
   const map = new Map<string, Group>();
   for (const p of products) {
     const fam = p.product_family || p.name;
-    const buckets = incomingMap?.[p.id] ?? { thisMonth: 0, nextMonth: 0, following: 0 };
+    const buckets = incomingMap?.[p.id] ?? { thisMonth: 0, nextMonth: 0, following: 0, later: 0 };
     const lastSales = lastMonthSalesMap?.[p.id] ?? 0;
     const g =
       map.get(fam) ??
@@ -99,6 +103,7 @@ export function GroupedInventory({
         incomingThis: 0,
         incomingNext: 0,
         incomingFollowing: 0,
+        incomingLater: 0,
         value: 0,
         coverage: null,
       } satisfies Group);
@@ -111,6 +116,7 @@ export function GroupedInventory({
     g.incomingThis += Number(buckets.thisMonth || 0);
     g.incomingNext += Number(buckets.nextMonth || 0);
     g.incomingFollowing += Number(buckets.following || 0);
+    g.incomingLater += Number(buckets.later || 0);
     g.value += Number(p.inventory_value_myr || 0);
     map.set(fam, g);
   }
@@ -136,7 +142,7 @@ export function GroupedInventory({
             <th className="pt-2.5 pb-1 px-3 font-semibold text-right" rowSpan={2}>Stock</th>
             <th className="pt-2.5 pb-1 px-3 font-semibold text-center border-l border-gray-200" colSpan={3}>Avg monthly sales (3-mo)</th>
             <th className="pt-2.5 pb-1 px-3 font-semibold text-right border-l border-gray-200" rowSpan={2}>Sold<br/>last mo</th>
-            <th className="pt-2.5 pb-1 px-3 font-semibold text-center border-l border-gray-200" colSpan={3}>Incoming (units arriving)</th>
+            <th className="pt-2.5 pb-1 px-3 font-semibold text-center border-l border-gray-200" colSpan={4}>Incoming (units arriving)</th>
             {!hideValue && (
               <th className="pt-2.5 pb-1 px-3 font-semibold text-right border-l border-gray-200" rowSpan={2}>Inv.<br/>value</th>
             )}
@@ -149,6 +155,7 @@ export function GroupedInventory({
             <th className="pb-2 px-3 font-medium text-right border-l border-gray-200">{incomingMonthLabels[0]}</th>
             <th className="pb-2 px-3 font-medium text-right">{incomingMonthLabels[1]}</th>
             <th className="pb-2 px-3 font-medium text-right">{incomingMonthLabels[2]}</th>
+            <th className="pb-2 px-3 font-medium text-right">{incomingMonthLabels[3]}</th>
           </tr>
         </thead>
         <tbody>
@@ -206,6 +213,9 @@ export function GroupedInventory({
                   <td className="py-2.5 px-3 text-right tabular-nums text-gray-500">
                     {n(g.incomingFollowing)}
                   </td>
+                  <td className="py-2.5 px-3 text-right tabular-nums text-gray-400">
+                    {n(g.incomingLater)}
+                  </td>
                   {!hideValue && (
                     <td className="py-2.5 px-3 text-right tabular-nums text-gray-600">
                       {rm(g.value)}
@@ -222,7 +232,7 @@ export function GroupedInventory({
                     return g.rows
                     .sort((a, b) => b.ams_total - a.ams_total)
                     .map((p) => {
-                      const pb = incomingMap?.[p.id] ?? { thisMonth: 0, nextMonth: 0, following: 0 };
+                      const pb = incomingMap?.[p.id] ?? { thisMonth: 0, nextMonth: 0, following: 0, later: 0 };
                       const ls = lastMonthSalesMap?.[p.id] ?? 0;
                       return (
                         <tr
@@ -260,6 +270,9 @@ export function GroupedInventory({
                           </td>
                           <td className="py-1.5 px-3 text-right tabular-nums">
                             {n(pb.following)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right tabular-nums text-gray-400">
+                            {n(pb.later)}
                           </td>
                           {!hideValue && (
                             <td className="py-1.5 px-3 text-right tabular-nums">
