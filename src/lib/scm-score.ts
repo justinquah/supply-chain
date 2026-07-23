@@ -8,6 +8,9 @@ const clamp = (v: number, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, v));
 export type ScmScoreInput = {
   // From the KPI engine (latest month), 0–100 each (null if no KPI month yet)
   oosPct: number | null;
+  /** Demand-weighted OOS (Σ AMS of OOS SKUs / Σ AMS) — the headline; when
+      present it feeds Availability instead of the SKU-count oosPct. */
+  oosWeightedPct?: number | null;
   overstockPct: number | null;
   healthyPct: number | null;
   // Reorder discipline
@@ -56,14 +59,17 @@ export const efficiencyScore = (overstockPct: number) =>
  * Stock-only score for a single week or month, on the same /100 scale as the
  * composite: the three stock pillars at their composite weights (30/25/25),
  * renormalised to 100 because PO coordination has no per-period history.
+ * Pass oosWeightedPct (demand-weighted) when available — same rule as the
+ * composite score's Availability pillar.
  */
 export function computeStockScore(
   oosPct: number,
   overstockPct: number,
-  healthyPct: number
+  healthyPct: number,
+  oosWeightedPct?: number | null
 ): number {
   return (
-    (availabilityScore(oosPct) * 30 +
+    (availabilityScore(oosWeightedPct ?? oosPct) * 30 +
       healthScore(healthyPct) * 25 +
       efficiencyScore(overstockPct) * 25) /
     80
@@ -71,7 +77,11 @@ export function computeStockScore(
 }
 
 export function computeScmScore(i: ScmScoreInput): ScmScore {
-  const oos = i.oosPct ?? 0;
+  const oosCount = i.oosPct ?? 0;
+  // Demand-weighted OOS is the headline when the KPI engine provides it —
+  // "% of monthly demand unfulfillable", not "% of SKUs at zero".
+  const oos = i.oosWeightedPct ?? oosCount;
+  const weighted = i.oosWeightedPct != null;
   const healthy = i.healthyPct ?? 0;
   const overstock = i.overstockPct ?? 0;
 
@@ -89,8 +99,11 @@ export function computeScmScore(i: ScmScoreInput): ScmScore {
   const pct = (v: number) => Math.round(v);
 
   // --- Plain-English diagnosis + fixes per pillar (shown on the KPI page) ---
-  const availabilityWhy =
-    oos > 0
+  const availabilityWhy = weighted
+    ? oos > 0
+      ? `${oos.toFixed(1)}% of monthly demand could not be fulfilled (demand-weighted OOS; ${pct(oosCount)}% of SKUs were at zero) — each 1% of demand out of stock costs 10 points (−${pct(100 - availability)} here).`
+      : `No demand was left unfulfilled this period${oosCount > 0 ? ` (${pct(oosCount)}% of SKUs were at zero, but none with meaningful sales)` : ""} — full marks.`
+    : oos > 0
       ? `${pct(oos)}% of eligible SKUs hit zero stock in this period — each 1% out-of-stock costs 10 points (−${pct(100 - availability)} here), and every OOS week is lost sales.`
       : "No SKU was out of stock in this period — full marks.";
   const availabilityActions =
@@ -155,7 +168,9 @@ export function computeScmScore(i: ScmScoreInput): ScmScore {
       key: "availability",
       label: "Availability",
       weight: 30,
-      metric: `OOS ${pct(oos)}%`,
+      metric: weighted
+        ? `OOS ${oos.toFixed(1)}% of demand · ${pct(oosCount)}% of SKUs`
+        : `OOS ${pct(oos)}%`,
       score: availability,
       weighted: (availability * 30) / 100,
       why: availabilityWhy,

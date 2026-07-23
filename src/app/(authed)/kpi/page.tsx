@@ -142,8 +142,13 @@ export default async function KpiPage({
         )
         .map((w: any) => ({
           label: fmtWeek(w.week_start),
-          score: computeStockScore(Number(w.oos_pct), Number(w.overstock_pct), Number(w.healthy_pct)),
-          oos: Number(w.oos_pct),
+          score: computeStockScore(
+            Number(w.oos_pct),
+            Number(w.overstock_pct),
+            Number(w.healthy_pct),
+            w.oos_weighted_pct != null ? Number(w.oos_weighted_pct) : null
+          ),
+          oos: Number(w.oos_weighted_pct ?? w.oos_pct),
           overstock: Number(w.overstock_pct),
           healthy: Number(w.healthy_pct),
         }));
@@ -156,8 +161,13 @@ export default async function KpiPage({
         )
         .map((m: any) => ({
           label: `${MONTHS[m.cal_month]} ${m.cal_year}`,
-          score: computeStockScore(Number(m.oos_pct), Number(m.overstock_pct), Number(m.healthy_pct)),
-          oos: Number(m.oos_pct),
+          score: computeStockScore(
+            Number(m.oos_pct),
+            Number(m.overstock_pct),
+            Number(m.healthy_pct),
+            m.oos_weighted_pct != null ? Number(m.oos_weighted_pct) : null
+          ),
+          oos: Number(m.oos_weighted_pct ?? m.oos_pct),
           overstock: Number(m.overstock_pct),
           healthy: Number(m.healthy_pct),
         }));
@@ -190,6 +200,8 @@ export default async function KpiPage({
 
   const scm = computeScmScore({
     oosPct: selKpi?.oos_pct != null ? Number(selKpi.oos_pct) : null,
+    oosWeightedPct:
+      selKpi?.oos_weighted_pct != null ? Number(selKpi.oos_weighted_pct) : null,
     overstockPct: selKpi?.overstock_pct != null ? Number(selKpi.overstock_pct) : null,
     healthyPct: selKpi?.healthy_pct != null ? Number(selKpi.healthy_pct) : null,
     lowStock,
@@ -386,7 +398,7 @@ export default async function KpiPage({
                         {delta == null ? "—" : delta > 0 ? `▲ ${delta}` : delta < 0 ? `▼ ${Math.abs(delta)}` : "＝"}
                       </span>
                       <span className="hidden sm:block w-56 text-right text-gray-400">
-                        OOS {t.oos.toFixed(1)}% · Over {t.overstock.toFixed(1)}% · Healthy {t.healthy.toFixed(1)}%
+                        OOS {t.oos.toFixed(1)}% of demand · Over {t.overstock.toFixed(1)}% · Healthy {t.healthy.toFixed(1)}%
                       </span>
                     </div>
                   );
@@ -441,10 +453,10 @@ export default async function KpiPage({
                   status={statusOver(selKpi.overstock_pct)}
                 />
                 <Score
-                  label="Out of stock %"
-                  value={pct(selKpi.oos_pct)}
-                  target="required 0% · stock = 0"
-                  status={statusOos(selKpi.oos_pct)}
+                  label="Out of stock — % of demand"
+                  value={pct(selKpi.oos_weighted_pct ?? selKpi.oos_pct)}
+                  target={`required 0% · demand-weighted · ${pct(selKpi.oos_pct)} of SKUs at zero`}
+                  status={statusOos(selKpi.oos_weighted_pct ?? selKpi.oos_pct)}
                 />
                 <Score
                   label="Healthy %"
@@ -480,6 +492,13 @@ export default async function KpiPage({
                       <KpiRow
                         label="Out of stock %"
                         values={kMonths.map((m: any) => pct(m.oos_pct))}
+                      />
+                      <KpiRow
+                        label="— % of demand (weighted)"
+                        values={kMonths.map((m: any) =>
+                          pct(m.oos_weighted_pct ?? m.oos_pct)
+                        )}
+                        muted
                       />
                       <KpiRow
                         label="Healthy %"
