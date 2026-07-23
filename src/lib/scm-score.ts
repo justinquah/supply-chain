@@ -45,17 +45,42 @@ export function gradeOf(total: number): { grade: string; label: string } {
   return { grade: "D", label: "Needs work" };
 }
 
+// The three stock-pillar formulas, shared by the composite score and the
+// per-week/per-month trend rows so both always agree.
+export const availabilityScore = (oosPct: number) => clamp(100 - oosPct * 10);
+export const healthScore = (healthyPct: number) => clamp((healthyPct / 80) * 100);
+export const efficiencyScore = (overstockPct: number) =>
+  clamp(100 - Math.max(0, overstockPct - 20) * 1.5);
+
+/**
+ * Stock-only score for a single week or month, on the same /100 scale as the
+ * composite: the three stock pillars at their composite weights (30/25/25),
+ * renormalised to 100 because PO coordination has no per-period history.
+ */
+export function computeStockScore(
+  oosPct: number,
+  overstockPct: number,
+  healthyPct: number
+): number {
+  return (
+    (availabilityScore(oosPct) * 30 +
+      healthScore(healthyPct) * 25 +
+      efficiencyScore(overstockPct) * 25) /
+    80
+  );
+}
+
 export function computeScmScore(i: ScmScoreInput): ScmScore {
   const oos = i.oosPct ?? 0;
   const healthy = i.healthyPct ?? 0;
   const overstock = i.overstockPct ?? 0;
 
   // 1. Availability (30%) — OOS 0% = 100, 10% = 0.
-  const availability = clamp(100 - oos * 10);
+  const availability = availabilityScore(oos);
   // 2. Stock health (25%) — Healthy 80%+ = 100.
-  const health = clamp((healthy / 80) * 100);
+  const health = healthScore(healthy);
   // 3. Capital efficiency (25%) — ≤20% overstock = 100, penalise beyond.
-  const efficiency = clamp(100 - Math.max(0, overstock - 20) * 1.5);
+  const efficiency = efficiencyScore(overstock);
   // 4. PO coordination (20%) — reorder discipline + delay management.
   const reorderScore = i.lowStock > 0 ? ((i.lowStock - i.lowNoPo) / i.lowStock) * 100 : 100;
   const delayScore = i.overdue > 0 ? (i.overdueManaged / i.overdue) * 100 : 100;

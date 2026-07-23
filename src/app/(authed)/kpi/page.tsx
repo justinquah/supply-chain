@@ -1,6 +1,6 @@
 import { createClient, requireRole } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { computeScmScore } from "@/lib/scm-score";
+import { computeScmScore, computeStockScore } from "@/lib/scm-score";
 
 const MONTHS = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const IDEAL = 1.5;
@@ -57,22 +57,20 @@ export default async function KpiPage({
   const periodParam = String(sp.p ?? "");
 
   const [
-    { data: monthly },
     { data: dash },
-    { data: weekly },
     { data: kMonthly },
     { data: kQuarterly },
     { data: kFy },
+    { data: kWeekly },
     { data: kSnap },
     { data: incomingExp },
     { data: shippedPos },
   ] = await Promise.all([
-    supabase.from("monthly_kpi").select("*"),
     supabase.from("product_dashboard").select("*").eq("is_main", true).eq("is_active", true),
-    supabase.from("inventory_weekly").select("*"),
     supabase.from("kpi_monthly").select("*"),
     supabase.from("kpi_quarterly").select("*"),
     supabase.from("kpi_fy").select("*"),
+    supabase.from("kpi_weekly").select("*"),
     supabase.from("kpi_snapshot").select("*"),
     supabase.from("incoming_stock").select("product_id").eq("status", "EXPECTED"),
     supabase
@@ -122,6 +120,49 @@ export default async function KpiPage({
     selLabel = periodLabel(selKpi);
   }
   const selKey = selKpi ? periodKey(selKpi) : "";
+
+  // ---- Score trend WITHIN the selected period ----
+  // Month view: one row per weekly upload; quarter/FY view: one row per month.
+  // Stock pillars only (30/25/25 renormalised) — PO coordination has no history.
+  const kWeeks = [...(kWeekly ?? [])].sort((a: any, b: any) =>
+    String(a.week_start).localeCompare(String(b.week_start))
+  );
+  const fmtWeek = (iso: string) => {
+    const [, m, d] = String(iso).split("-").map(Number);
+    return `Week of ${d} ${MONTHS[m]}`;
+  };
+  type TrendRow = { label: string; score: number; oos: number; overstock: number; healthy: number };
+  let scoreTrend: TrendRow[] = [];
+  if (selKpi) {
+    if (grain === "month") {
+      scoreTrend = kWeeks
+        .filter(
+          (w: any) =>
+            w.cal_year === selKpi.cal_year && w.cal_month === selKpi.cal_month
+        )
+        .map((w: any) => ({
+          label: fmtWeek(w.week_start),
+          score: computeStockScore(Number(w.oos_pct), Number(w.overstock_pct), Number(w.healthy_pct)),
+          oos: Number(w.oos_pct),
+          overstock: Number(w.overstock_pct),
+          healthy: Number(w.healthy_pct),
+        }));
+    } else {
+      scoreTrend = kMonths
+        .filter((m: any) =>
+          grain === "quarter"
+            ? m.fy === selKpi.fy && m.fy_q === selKpi.fy_q
+            : m.fy === selKpi.fy
+        )
+        .map((m: any) => ({
+          label: `${MONTHS[m.cal_month]} ${m.cal_year}`,
+          score: computeStockScore(Number(m.oos_pct), Number(m.overstock_pct), Number(m.healthy_pct)),
+          oos: Number(m.oos_pct),
+          overstock: Number(m.overstock_pct),
+          healthy: Number(m.healthy_pct),
+        }));
+    }
+  }
 
   // ---- SCM Performance Score (composite /100) — stock pillars from the SELECTED period ----
   const dashProducts = (dash ?? []) as any[];
@@ -173,17 +214,7 @@ export default async function KpiPage({
     .filter((s: any) => s.klass === "OVERSTOCK")
     .sort((a: any, b: any) => Number(b.stock) - Number(a.stock));
 
-  const months = monthly ?? [];
   const products = dash ?? [];
-
-  // Trailing-3-month AMS per month (units) for trend
-  const amsByMonth = months.map((m: any, i: number) => {
-    const window = months.slice(Math.max(0, i - 2), i + 1);
-    const avg =
-      window.reduce((s: number, x: any) => s + Number(x.units_total), 0) /
-      Math.min(3, window.length);
-    return { year: m.year, month: m.month, ams: avg };
-  });
 
   // Current-position KPIs (latest snapshot)
   const invValue = products.reduce((s, p) => s + Number(p.inventory_value_myr || 0), 0);
@@ -313,6 +344,56 @@ export default async function KpiPage({
               ))}
             </div>
           </div>
+          {/* Score trend within the period — weekly rows in Month view, monthly
+              rows in Quarter/FY view — so the SCM can review week by week. */}
+          {scoreTrend.length > 0 && (
+            <div className="mt-4 border-t border-gray-100 pt-3">
+              <div className="text-xs font-semibold text-gray-700 mb-2">
+                {grain === "month" ? "Score by week" : "Score by month"} · {selLabel}
+                <span className="text-gray-400 font-normal">
+                  {" "}
+                  · stock pillars only — PO coordination is current-state and has no history
+                </span>
+              </div>
+              <div className="space-y-1.5">
+                {scoreTrend.map((t, idx) => {
+                  const prev = idx > 0 ? scoreTrend[idx - 1].score : null;
+                  const delta = prev != null ? Math.round(t.score) - Math.round(prev) : null;
+                  return (
+                    <div key={t.label} className="flex items-center gap-3 text-xs">
+                      <span className="w-28 shrink-0 text-gray-600">{t.label}</span>
+                      <div className="flex-1 h-1.5 bg-gray-100 rounded overflow-hidden">
+                        <div
+                          className={"h-full rounded " + barColor(t.score)}
+                          style={{ width: `${Math.round(t.score)}%` }}
+                        />
+                      </div>
+                      <b className={"w-7 text-right " + scoreColor(t.score)}>
+                        {Math.round(t.score)}
+                      </b>
+                      <span
+                        className={
+                          "w-10 text-right " +
+                          (delta == null
+                            ? "text-gray-300"
+                            : delta > 0
+                              ? "text-emerald-600"
+                              : delta < 0
+                                ? "text-red-600"
+                                : "text-gray-400")
+                        }
+                      >
+                        {delta == null ? "—" : delta > 0 ? `▲ ${delta}` : delta < 0 ? `▼ ${Math.abs(delta)}` : "＝"}
+                      </span>
+                      <span className="hidden sm:block w-56 text-right text-gray-400">
+                        OOS {t.oos.toFixed(1)}% · Over {t.overstock.toFixed(1)}% · Healthy {t.healthy.toFixed(1)}%
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <p className="text-[11px] text-gray-400 mt-3">
             Stock pillars = the {grain === "month" ? "month's" : grain === "quarter" ? "quarter's" : "FY's"} KPI
             (month = avg of weekly uploads · quarter/FY = avg of monthly). PO coordination = reorder
@@ -356,19 +437,19 @@ export default async function KpiPage({
                 <Score
                   label="Overstock %"
                   value={pct(selKpi.overstock_pct)}
-                  target="stock > 2× AMS(3-mo)"
+                  target="required ≤ 20% · stock > 2× AMS(3-mo)"
                   status={statusOver(selKpi.overstock_pct)}
                 />
                 <Score
                   label="Out of stock %"
                   value={pct(selKpi.oos_pct)}
-                  target="stock = 0"
+                  target="required 0% · stock = 0"
                   status={statusOos(selKpi.oos_pct)}
                 />
                 <Score
                   label="Healthy %"
                   value={pct(selKpi.healthy_pct)}
-                  target="0 < stock ≤ 2× AMS"
+                  target="required ≥ 80% · 0 < stock ≤ 2× AMS"
                   status={statusHealthy(selKpi.healthy_pct)}
                 />
               </div>
@@ -449,7 +530,13 @@ export default async function KpiPage({
         </CardContent>
       </Card>
 
-      {/* Current position scorecard */}
+      {/* ============ Capital efficiency — cash tied in stock vs target ============ */}
+      <div>
+        <h2 className="text-sm font-semibold text-gray-700">Capital efficiency</h2>
+        <p className="text-[11px] text-gray-400">
+          How hard the inventory money is working — required: coverage near {IDEAL} months, not under, not far over.
+        </p>
+      </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Score
           label="Weighted turnover"
@@ -491,62 +578,9 @@ export default async function KpiPage({
         <MiniStat label="Overstocked (>3 mo)" value={over} warn />
       </div>
 
-      {/* Monthly results table */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Results by month</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-gray-500 border-b border-gray-200">
-                  <th className="py-2 pr-3 font-medium">KPI</th>
-                  {months.map((m: any) => (
-                    <th
-                      key={`${m.year}-${m.month}`}
-                      className="py-2 px-3 font-medium text-right whitespace-nowrap"
-                    >
-                      {MONTHS[m.month]} {String(m.year).slice(2)}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                <KpiRow
-                  label="Units sold — total"
-                  values={months.map((m: any) => num(Number(m.units_total)))}
-                  bold
-                />
-                <KpiRow
-                  label="— online"
-                  values={months.map((m: any) => num(Number(m.units_online || 0)))}
-                  muted
-                />
-                <KpiRow
-                  label="— offline"
-                  values={months.map((m: any) => num(Number(m.units_offline || 0)))}
-                  muted
-                />
-                <KpiRow
-                  label="AMS (trailing 3 mo)"
-                  values={amsByMonth.map((a) => num(a.ams))}
-                />
-                <KpiRow
-                  label="Sales value (at cost)"
-                  values={months.map((m: any) => rm(Number(m.sales_value_myr || 0)))}
-                  bold
-                />
-              </tbody>
-            </table>
-          </div>
-          <p className="text-xs text-gray-400 mt-3">
-            Inventory value & turnover by month build up as you upload stock weekly
-            (currently {weekly?.length ?? 0} week
-            {(weekly?.length ?? 0) === 1 ? "" : "s"} of stock history).
-          </p>
-        </CardContent>
-      </Card>
+      {/* Sales reporting deliberately does NOT live here — the KPI tab measures
+          what the SCM controls (availability + capital efficiency). Units sold
+          and sales value are on the Sales / Sales Trend tabs. */}
     </div>
   );
 }
