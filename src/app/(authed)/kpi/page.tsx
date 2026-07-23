@@ -45,7 +45,7 @@ type Grain = "month" | "quarter" | "fy";
 export default async function KpiPage({
   searchParams,
 }: {
-  searchParams: Promise<{ g?: string }>;
+  searchParams: Promise<{ g?: string; p?: string }>;
 }) {
   // Internal-only: rejects STAFF and SUPPLIER.
   await requireRole("SCM", "ADMIN", "WAREHOUSE", "LOGISTICS");
@@ -53,6 +53,8 @@ export default async function KpiPage({
   const sp = await searchParams;
   const grain: Grain =
     sp.g === "quarter" || sp.g === "fy" ? (sp.g as Grain) : "month";
+  // Requested period within the grain (e.g. p=2026-5 for May 2026); defaults to latest.
+  const periodParam = String(sp.p ?? "");
 
   const [
     { data: monthly },
@@ -88,21 +90,38 @@ export default async function KpiPage({
   );
   const kFys = [...(kFy ?? [])].sort((a: any, b: any) => a.fy - b.fy);
 
-  // Selected period = latest available row for the chosen grain. The KPI engine
-  // already aggregates weekly→monthly (avg of the month's weekly uploads),
-  // monthly→quarterly (avg of monthly), and monthly→FY (avg of monthly).
+  // Selected period = the ?p= period if it exists for the grain, else the
+  // latest available row. The KPI engine already aggregates weekly→monthly
+  // (avg of the month's weekly uploads), monthly→quarterly (avg of monthly),
+  // and monthly→FY (avg of monthly).
+  const periodKey = (row: any): string =>
+    grain === "month"
+      ? `${row.cal_year}-${row.cal_month}`
+      : grain === "quarter"
+        ? `${row.fy}-${row.fy_q}`
+        : `${row.fy}`;
+  const periodLabel = (row: any): string =>
+    grain === "month"
+      ? `${MONTHS[row.cal_month]} ${row.cal_year}`
+      : grain === "quarter"
+        ? `Q${row.fy_q} ${row.fy_label}`
+        : row.fy_label;
+  const grainRows: any[] =
+    grain === "month" ? kMonths : grain === "quarter" ? kQtrs : kFys;
+  const periodOptions = grainRows.map((r) => ({
+    key: periodKey(r),
+    label: periodLabel(r),
+  }));
+
   let selKpi: any = null;
   let selLabel = "—";
-  if (grain === "month" && kMonths.length) {
-    selKpi = kMonths[kMonths.length - 1];
-    selLabel = `${MONTHS[selKpi.cal_month]} ${selKpi.cal_year}`;
-  } else if (grain === "quarter" && kQtrs.length) {
-    selKpi = kQtrs[kQtrs.length - 1];
-    selLabel = `Q${selKpi.fy_q} ${selKpi.fy_label}`;
-  } else if (grain === "fy" && kFys.length) {
-    selKpi = kFys[kFys.length - 1];
-    selLabel = selKpi.fy_label;
+  if (grainRows.length) {
+    selKpi =
+      grainRows.find((r) => periodKey(r) === periodParam) ??
+      grainRows[grainRows.length - 1];
+    selLabel = periodLabel(selKpi);
   }
+  const selKey = selKpi ? periodKey(selKpi) : "";
 
   // ---- SCM Performance Score (composite /100) — stock pillars from the SELECTED period ----
   const dashProducts = (dash ?? []) as any[];
@@ -229,6 +248,26 @@ export default async function KpiPage({
               </a>
             ))}
           </div>
+          {/* Period picker within the grain — view any past month/quarter, not just the latest. */}
+          {periodOptions.length > 1 && (
+            <div className="w-full flex flex-wrap items-center gap-1.5 pt-1">
+              <span className="text-[11px] text-gray-400 mr-1">View:</span>
+              {periodOptions.map((o) => (
+                <a
+                  key={o.key}
+                  href={`/kpi?g=${grain}&p=${o.key}`}
+                  className={
+                    "px-2 py-0.5 rounded-full text-xs border " +
+                    (o.key === selKey
+                      ? "bg-gray-900 text-white border-gray-900 font-medium"
+                      : "bg-white text-gray-600 border-gray-200 hover:border-gray-400")
+                  }
+                >
+                  {o.label}
+                </a>
+              ))}
+            </div>
+          )}
         </CardHeader>
         <CardContent>
           <div className="flex items-center gap-6 flex-wrap">
@@ -256,6 +295,20 @@ export default async function KpiPage({
                       style={{ width: `${Math.round(p.score)}%` }}
                     />
                   </div>
+                  {/* Why the score is what it is, in the period's own numbers. */}
+                  <p className="text-[11px] text-gray-500 mt-1">{p.why}</p>
+                  {p.actions.length > 0 && (
+                    <details className="mt-0.5">
+                      <summary className="text-[11px] text-sky-700 cursor-pointer select-none">
+                        How to improve
+                      </summary>
+                      <ul className="mt-1 space-y-0.5 text-[11px] text-gray-600 list-disc pl-4">
+                        {p.actions.map((a) => (
+                          <li key={a}>{a}</li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
                 </div>
               ))}
             </div>

@@ -25,6 +25,10 @@ export type Pillar = {
   metric: string; // human-readable raw metric
   score: number; // 0–100
   weighted: number; // score × weight/100
+  /** Plain-English diagnosis: why the score is what it is, with the numbers. */
+  why: string;
+  /** Concrete moves that raise this pillar (empty when already at 100). */
+  actions: string[];
 };
 
 export type ScmScore = {
@@ -58,6 +62,69 @@ export function computeScmScore(i: ScmScoreInput): ScmScore {
   const coordination = clamp((reorderScore + delayScore) / 2);
 
   const pct = (v: number) => Math.round(v);
+
+  // --- Plain-English diagnosis + fixes per pillar (shown on the KPI page) ---
+  const availabilityWhy =
+    oos > 0
+      ? `${pct(oos)}% of eligible SKUs hit zero stock in this period — each 1% out-of-stock costs 10 points (−${pct(100 - availability)} here), and every OOS week is lost sales.`
+      : "No SKU was out of stock in this period — full marks.";
+  const availabilityActions =
+    availability < 100
+      ? [
+          "Reorder before coverage falls under 1.5 months — the Insights tab's Replenish list is exactly this queue.",
+          "Expedite incoming POs for SKUs already at zero (Insights → Expedite tasks).",
+          "For new launches, set the launch date so early low sales don't hide a stock-out risk.",
+        ]
+      : [];
+
+  const healthWhy =
+    healthy < 80
+      ? `Only ${pct(healthy)}% of SKUs sit in the healthy band (in stock, under 2× a month's sales) against the 80% target — the rest are either starved or overbought (−${pct(100 - health)} pts).`
+      : `${pct(healthy)}% of SKUs in the healthy band — at or above the 80% target.`;
+  const healthActions =
+    health < 100
+      ? [
+          "Work both tails at once: replenish the understocked list and slow the overstocked one (both live on Insights).",
+          "Size orders to ~1.5 months of average sales rather than filling a container beyond need.",
+          "Review slow movers monthly and push promotions before they age into overstock.",
+        ]
+      : [];
+
+  const efficiencyWhy =
+    overstock > 20
+      ? `${pct(overstock)}% of SKUs carry more than 2 months of sales in stock. Beyond the 20% allowance that ties up cash in inventory instead of funding new POs (−${pct(100 - efficiency)} pts).`
+      : `Overstock at ${pct(overstock)}% — within the 20% allowance.`;
+  const efficiencyActions =
+    efficiency < 100
+      ? [
+          "Push sales on ranges above 3 months' coverage (Insights → Push sales list).",
+          "Delay incoming POs for overstocked SKUs — the Insights Delay tasks propose a later ETA you can send to the supplier.",
+          "Trim reorder quantities to shipment sizes that keep coverage near 1.5 months.",
+        ]
+      : [];
+
+  const unmanaged = Math.max(0, i.overdue - i.overdueManaged);
+  const coordParts: string[] = [];
+  if (i.lowNoPo > 0)
+    coordParts.push(
+      `${i.lowNoPo} of ${i.lowStock} low-stock SKUs have no incoming PO`
+    );
+  if (unmanaged > 0)
+    coordParts.push(
+      `${unmanaged} of ${i.overdue} overdue POs have no updated ETA or Delayed flag`
+    );
+  const coordinationWhy = coordParts.length
+    ? `${coordParts.join(", and ")} — this measures the coordination the SCM controls, not the delay itself (−${pct(100 - coordination)} pts).`
+    : "Every low-stock SKU has an incoming PO and every overdue PO is being managed — full marks.";
+  const coordinationActions =
+    coordination < 100
+      ? [
+          "Issue POs for low-stock SKUs with nothing incoming (Insights → New PO suggestions size one shipment for you).",
+          "On overdue POs, update the ETA or flag Delayed so the slip is visibly managed.",
+          "Use the Email-supplier buttons so the expedite/delay request reaches the supplier the moment you decide.",
+        ]
+      : [];
+
   const pillars: Pillar[] = [
     {
       key: "availability",
@@ -66,6 +133,8 @@ export function computeScmScore(i: ScmScoreInput): ScmScore {
       metric: `OOS ${pct(oos)}%`,
       score: availability,
       weighted: (availability * 30) / 100,
+      why: availabilityWhy,
+      actions: availabilityActions,
     },
     {
       key: "health",
@@ -74,6 +143,8 @@ export function computeScmScore(i: ScmScoreInput): ScmScore {
       metric: `Healthy ${pct(healthy)}%`,
       score: health,
       weighted: (health * 25) / 100,
+      why: healthWhy,
+      actions: healthActions,
     },
     {
       key: "efficiency",
@@ -82,6 +153,8 @@ export function computeScmScore(i: ScmScoreInput): ScmScore {
       metric: `Overstock ${pct(overstock)}%`,
       score: efficiency,
       weighted: (efficiency * 25) / 100,
+      why: efficiencyWhy,
+      actions: efficiencyActions,
     },
     {
       key: "coordination",
@@ -90,6 +163,8 @@ export function computeScmScore(i: ScmScoreInput): ScmScore {
       metric: `${i.lowStock - i.lowNoPo}/${i.lowStock} reorders covered · ${i.overdueManaged}/${i.overdue} overdue managed`,
       score: coordination,
       weighted: (coordination * 20) / 100,
+      why: coordinationWhy,
+      actions: coordinationActions,
     },
   ];
 
