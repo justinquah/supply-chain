@@ -36,7 +36,7 @@ const ALL_NAV: { href: string; label: string; roles: string[] }[] = [
   },
   { href: "/products", label: "Products", roles: INTERNAL },
   { href: "/suppliers", label: "Suppliers", roles: ["SCM", "ADMIN"] },
-  { href: "/development", label: "Development", roles: ["SCM", "ADMIN"] },
+  { href: "/development", label: "NPD", roles: ["SCM", "ADMIN"] },
   { href: "/permits", label: "Permits", roles: ["SCM", "ADMIN"] },
   { href: "/stock", label: "Stock Levels", roles: OPS },
   { href: "/supplier", label: "My Orders", roles: ["SUPPLIER", "SCM", "ADMIN"] },
