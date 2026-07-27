@@ -1,6 +1,7 @@
 import { requireRole, createClient } from "@/lib/supabase/server";
 import { ActionList } from "@/components/action-list";
 import { PoReorderInsights } from "@/components/po-reorder-insights";
+import { DemandUplift, type DemandUpliftRow } from "./demand-uplift";
 import type { ProductRow } from "@/components/grouped-inventory";
 
 const IDEAL = 1.5;
@@ -37,6 +38,15 @@ export default async function InsightsPage() {
     );
   }
 
+  // Today in Asia/Kuala_Lumpur — drives ETA math AND the demand-uplift window
+  // (the "last completed month" is KL-relative).
+  const nowKL = new Date(
+    new Date().toLocaleString("en-US", { timeZone: "Asia/Kuala_Lumpur" })
+  );
+  const curYear = nowKL.getFullYear();
+  const curMonth = nowKL.getMonth() + 1;
+  const todayISO = `${curYear}-${String(curMonth).padStart(2, "0")}-${String(nowKL.getDate()).padStart(2, "0")}`;
+
   // Resolved timing actions within the last 21 days → move those PO tasks to
   // the "Recently resolved" sub-section on the insights cards.
   const resolvedCutoff = new Date(Date.now() - 21 * 86400000).toISOString();
@@ -52,7 +62,11 @@ export default async function InsightsPage() {
       .from("incoming_stock")
       .select("product_id, quantity, expected_date, purchase_orders(id, po_number)")
       .eq("status", "EXPECTED"),
-    supabase.from("products").select("id, units_per_shipment"),
+    supabase
+      .from("products")
+      .select(
+        "id, units_per_shipment, name, product_family, variation, is_main, is_active"
+      ),
     supabase
       .from("po_timing_actions")
       .select("po_id, action_type, resolved_at")
@@ -61,9 +75,20 @@ export default async function InsightsPage() {
   ]);
 
   const unitsPerShipmentById = new Map<string, number | null>();
+  // Product metadata for the demand-uplift card (active MAIN products only).
+  const prodMeta = new Map<
+    string,
+    { name: string; family: string | null; variation: string | null; activeMain: boolean }
+  >();
   for (const r of shipmentRows ?? []) {
     const v = (r as any).units_per_shipment;
     unitsPerShipmentById.set(String((r as any).id), v != null ? Number(v) : null);
+    prodMeta.set(String((r as any).id), {
+      name: String((r as any).name ?? ""),
+      family: (r as any).product_family ?? null,
+      variation: (r as any).variation ?? null,
+      activeMain: Boolean((r as any).is_main) && Boolean((r as any).is_active),
+    });
   }
 
   const resolvedDelay = new Set<string>();
@@ -164,13 +189,113 @@ export default async function InsightsPage() {
     unitsPerShipment: unitsPerShipmentById.get(String(p.id)) ?? null,
   }));
 
-  // Today in Asia/Kuala_Lumpur as YYYY-MM-DD for ETA math.
-  const nowKL = new Date(
-    new Date().toLocaleString("en-US", { timeZone: "Asia/Kuala_Lumpur" })
-  );
-  const curYear = nowKL.getFullYear();
-  const curMonth = nowKL.getMonth() + 1;
-  const todayISO = `${curYear}-${String(curMonth).padStart(2, "0")}-${String(nowKL.getDate()).padStart(2, "0")}`;
+  // ---- Demand uplift: last completed KL month vs the 3 months before it ----
+  // The stock plan runs on trailing 3-month averages (AMS), so a real demand
+  // shift is absorbed months late. Flag products whose last completed month
+  // ran >= +20% above the average of the 3 prior months (per channel), so the
+  // SCM can ask the Online/Offline team: short-term (promo) or long-term?
+  const prevYM = (y: number, m: number): [number, number] =>
+    m === 1 ? [y - 1, 12] : [y, m - 1];
+  const [lastY, lastM] = prevYM(curYear, curMonth); // last completed month
+  // window = [b3, b2, b1, last] (oldest → newest): 3 baseline months + spike month.
+  const demandWindow: { y: number; m: number }[] = [{ y: lastY, m: lastM }];
+  {
+    let y = lastY;
+    let m = lastM;
+    for (let i = 0; i < 3; i++) {
+      [y, m] = prevYM(y, m);
+      demandWindow.unshift({ y, m });
+    }
+  }
+  const periodISO = `${lastY}-${String(lastM).padStart(2, "0")}-01`;
+  const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const monthLabel = `${MONTH_ABBR[lastM - 1]} ${lastY}`;
+
+  // Fetch the 4 months of sales (paginated — rows per product/channel/month
+  // may span multiple rows and exceed the PostgREST page size; aggregate here).
+  const demandOr = demandWindow
+    .map(({ y, m }) => `and(year.eq.${y},month.eq.${m})`)
+    .join(",");
+  type SalesRow = {
+    main_product_id: string | null;
+    year: number;
+    month: number;
+    channel: string | null;
+    units_equivalent: number | null;
+  };
+  const salesRows: SalesRow[] = [];
+  const PAGE = 1000;
+  for (let from = 0; ; from += PAGE) {
+    const { data: batch } = await supabase
+      .from("monthly_sales")
+      .select("main_product_id, year, month, channel, units_equivalent")
+      .or(demandOr)
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    const rowsBatch = (batch ?? []) as SalesRow[];
+    salesRows.push(...rowsBatch);
+    if (rowsBatch.length < PAGE) break;
+  }
+
+  // Existing verdicts for the spiking month — these rows are RESOLVED.
+  const { data: signalRows } = await supabase
+    .from("demand_signals")
+    .select("product_id, channel, resolution, note")
+    .eq("period", periodISO);
+  const verdictByKey = new Map<
+    string,
+    { resolution: "SHORT_TERM" | "LONG_TERM"; note: string | null }
+  >();
+  for (const s of signalRows ?? []) {
+    verdictByKey.set(`${s.product_id}|${s.channel}`, {
+      resolution: s.resolution as "SHORT_TERM" | "LONG_TERM",
+      note: (s.note as string | null) ?? null,
+    });
+  }
+
+  // Aggregate units per (main product, channel) across the 4-month window.
+  const demandIdx = (y: number, m: number) =>
+    demandWindow.findIndex((w) => w.y === y && w.m === m);
+  const demandSeries = new Map<string, number[]>(); // "pid|channel" -> [b3,b2,b1,last]
+  for (const r of salesRows) {
+    const pid = r.main_product_id;
+    const ch = r.channel;
+    if (!pid || (ch !== "ONLINE" && ch !== "OFFLINE")) continue;
+    const i = demandIdx(Number(r.year), Number(r.month));
+    if (i < 0) continue;
+    const k = `${pid}|${ch}`;
+    const arr = demandSeries.get(k) ?? [0, 0, 0, 0];
+    arr[i] += Number(r.units_equivalent || 0);
+    demandSeries.set(k, arr);
+  }
+
+  // Flag: baseline >= 50 u/mo AND last month >= baseline x 1.20, active main
+  // products only. Sort by ABSOLUTE extra units — a +100% spike on 200 units
+  // matters less than +50% on 30,000.
+  const upliftRows: DemandUpliftRow[] = [];
+  for (const [k, arr] of demandSeries) {
+    const baseline = (arr[0] + arr[1] + arr[2]) / 3;
+    const last = arr[3];
+    if (!(baseline >= 50)) continue;
+    if (!(last >= baseline * 1.2)) continue;
+    const [pid, ch] = k.split("|");
+    const meta = prodMeta.get(pid);
+    if (!meta || !meta.activeMain) continue;
+    const verdict = verdictByKey.get(k) ?? null;
+    upliftRows.push({
+      productId: pid,
+      label: meta.variation || meta.name,
+      family: meta.family,
+      channel: ch as "ONLINE" | "OFFLINE",
+      lastUnits: last,
+      baseline,
+      upliftPct: ((last - baseline) / baseline) * 100,
+      extraUnits: last - baseline,
+      resolution: verdict?.resolution ?? null,
+      note: verdict?.note ?? null,
+    });
+  }
+  upliftRows.sort((a, b) => b.extraUnits - a.extraUnits);
 
   return (
     <div className="space-y-6">
@@ -199,6 +324,15 @@ export default async function InsightsPage() {
           empty="No ranges heavily overstocked."
         />
       </div>
+
+      {/* Demand uplift — spike vs the trailing 3-month average, per channel.
+          Only SCM/ADMIN may record verdicts (same gate as canEmailSupplier). */}
+      <DemandUplift
+        rows={upliftRows}
+        period={periodISO}
+        monthLabel={monthLabel}
+        canAct={canEmailSupplier}
+      />
 
       {/* PO timing & reorder — expedite / delay / new PO */}
       <div className="space-y-2">
