@@ -1,6 +1,7 @@
 import { requireRole, createClient } from "@/lib/supabase/server";
 import { LaunchCalendar, type CalendarProject } from "./launch-calendar";
 import { NpdManager, type Category, type NpdProject } from "./npd-manager";
+import { dossierProgress } from "./constants";
 
 // Asia/KL "today" for the calendar's initial month and today highlight.
 function klTodayInfo(): { year: number; month: number; todayIso: string } {
@@ -22,10 +23,11 @@ export default async function DevelopmentPage() {
     supabase
       .from("npd_projects")
       .select(
-        "id, name, category_id, target_launch_date, status, notes, " +
+        "id, name, category_id, target_launch_date, status, notes, spie_applicable, " +
           "product_categories(id, name), " +
           "npd_variations(id, name, usp, key_benefit, rp_price, rsp_price, pack_size, notes, created_at), " +
-          "npd_checklist(id, stage, done, done_at, target_date)"
+          "npd_checklist(id, stage, done, done_at, target_date), " +
+          "npd_documents(id, doc_type, file_path, file_name, uploaded_at)"
       )
       // Soonest launch first; undated projects last.
       .order("target_launch_date", { ascending: true, nullsFirst: false }),
@@ -47,14 +49,22 @@ export default async function DevelopmentPage() {
   // Calendar shows ACTIVE + LAUNCHED projects (on-hold/cancelled stay off it).
   const calendarProjects: CalendarProject[] = projects
     .filter((p) => p.status === "ACTIVE" || p.status === "LAUNCHED")
-    .map((p) => ({
-      id: p.id,
-      name: p.name,
-      category: p.product_categories?.name ?? null,
-      date: p.target_launch_date,
-      doneCount: (p.npd_checklist ?? []).filter((c) => c.done).length,
-      status: p.status as "ACTIVE" | "LAUNCHED",
-    }));
+    .map((p) => {
+      const dossier = dossierProgress(
+        p.npd_documents ?? [],
+        p.spie_applicable
+      );
+      return {
+        id: p.id,
+        name: p.name,
+        category: p.product_categories?.name ?? null,
+        date: p.target_launch_date,
+        doneCount: (p.npd_checklist ?? []).filter((c) => c.done).length,
+        dossierDone: dossier.done,
+        dossierTotal: dossier.total,
+        status: p.status as "ACTIVE" | "LAUNCHED",
+      };
+    });
 
   return (
     <div className="space-y-6">

@@ -75,3 +75,58 @@ export const NPD_STAGES: NpdStageMeta[] = [
 export const NPD_STAGE_KEYS: NpdStageKey[] = NPD_STAGES.map((s) => s.key);
 
 export const NPD_STAGE_COUNT = NPD_STAGES.length; // 7
+
+// ---------------------------------------------------------------------------
+// DVS dossier — documents required for the DVS permit application, mirrors
+// the npd_documents.doc_type CHECK constraint. Multiple files per type are
+// allowed (e.g. two mock-ups); "complete" = at least one file per applicable
+// type. SPIE_LETTER counts only when the project's spie_applicable flag is
+// true (SPIE letters are for NON-fish-ingredient pet food).
+// ---------------------------------------------------------------------------
+export type NpdDocType =
+  | "CFS_COO"
+  | "DIELINE"
+  | "MOCKUP"
+  | "INGREDIENT_LIST"
+  | "COA"
+  | "SPIE_LETTER";
+
+export type NpdDocMeta = {
+  key: NpdDocType;
+  label: string;
+  /** Small grey caption under the label. */
+  caption?: string;
+};
+
+export const NPD_DOC_TYPES: NpdDocMeta[] = [
+  { key: "CFS_COO", label: "Certificate of Free Sale / Certificate of Origin" },
+  { key: "DIELINE", label: "Packaging dieline" },
+  { key: "MOCKUP", label: "Packaging mock-up" },
+  { key: "INGREDIENT_LIST", label: "Ingredient list" },
+  { key: "COA", label: "Certificate of Analysis" },
+  {
+    key: "SPIE_LETTER",
+    label: "SPIE letter",
+    caption: "non-fish ingredient pet food only",
+  },
+];
+
+export const NPD_DOC_TYPE_KEYS: NpdDocType[] = NPD_DOC_TYPES.map((d) => d.key);
+
+/**
+ * Dossier completeness: done = applicable doc types with at least one file,
+ * total = 5 + (SPIE applicable ? 1 : 0).
+ */
+export function dossierProgress(
+  docs: { doc_type: string }[],
+  spieApplicable: boolean
+): { done: number; total: number } {
+  const applicable = NPD_DOC_TYPES.filter(
+    (t) => t.key !== "SPIE_LETTER" || spieApplicable
+  );
+  const present = new Set(docs.map((d) => d.doc_type));
+  return {
+    done: applicable.filter((t) => present.has(t.key)).length,
+    total: applicable.length,
+  };
+}

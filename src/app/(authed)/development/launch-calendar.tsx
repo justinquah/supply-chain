@@ -15,6 +15,9 @@ export type CalendarProject = {
   date: string | null;
   /** Checklist stages ticked done (out of NPD_STAGE_COUNT = 7). */
   doneCount: number;
+  /** DVS dossier completeness (doc types with >=1 file / applicable types). */
+  dossierDone?: number;
+  dossierTotal?: number;
   status: "ACTIVE" | "LAUNCHED";
 };
 
@@ -248,6 +251,18 @@ export function LaunchCalendar({
                     {fmtDate(p.date!)}
                   </span>
                   <ProgressChip doneCount={p.doneCount} />
+                  {p.dossierTotal != null && p.dossierDone != null && (
+                    <span
+                      className={cn(
+                        "text-xs tabular-nums whitespace-nowrap",
+                        p.dossierDone >= p.dossierTotal
+                          ? "text-emerald-600"
+                          : "text-amber-700"
+                      )}
+                    >
+                      · dossier {p.dossierDone}/{p.dossierTotal}
+                    </span>
+                  )}
                   <span
                     className={cn(
                       "ml-auto text-xs font-medium tabular-nums",

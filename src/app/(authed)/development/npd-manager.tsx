@@ -1,10 +1,12 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, formatBytes } from "@/lib/constants";
 import {
   createNpdProject,
   updateNpdProject,
@@ -14,6 +16,10 @@ import {
   deleteVariation,
   toggleChecklistStage,
   setStageTargetDate,
+  uploadNpdDocument,
+  getNpdDocUrl,
+  deleteNpdDocument,
+  setSpieApplicable,
 } from "./actions";
 import {
   NPD_STAGES,
@@ -21,7 +27,10 @@ import {
   NPD_STATUSES,
   NPD_STATUS_LABELS,
   NPD_STATUS_BADGE,
+  NPD_DOC_TYPES,
+  dossierProgress,
   type NpdStageKey,
+  type NpdDocType,
 } from "./constants";
 
 // ---------------------------------------------------------------------------
@@ -49,6 +58,14 @@ export type NpdChecklistRow = {
   target_date: string | null;
 };
 
+export type NpdDocument = {
+  id: string;
+  doc_type: NpdDocType;
+  file_path: string;
+  file_name: string | null;
+  uploaded_at: string | null;
+};
+
 export type NpdProject = {
   id: string;
   name: string;
@@ -56,9 +73,11 @@ export type NpdProject = {
   target_launch_date: string | null;
   status: string;
   notes: string | null;
+  spie_applicable: boolean;
   product_categories: Category | null;
   npd_variations: NpdVariation[];
   npd_checklist: NpdChecklistRow[];
+  npd_documents: NpdDocument[];
 };
 
 // ---------------------------------------------------------------------------
@@ -124,6 +143,23 @@ function MsgText({ msg }: { msg: Msg }) {
   return (
     <span className={cn("text-xs", msg.ok ? "text-emerald-600" : "text-red-600")}>
       {msg.text}
+    </span>
+  );
+}
+
+// "Dossier n/m" pill — amber while incomplete, emerald when complete.
+function DossierChip({ done, total }: { done: number; total: number }) {
+  const complete = done >= total;
+  return (
+    <span
+      className={cn(
+        "inline-block text-xs font-medium px-2 py-0.5 rounded-full tabular-nums",
+        complete
+          ? "bg-emerald-100 text-emerald-700 border border-emerald-200"
+          : "bg-amber-100 text-amber-700 border border-amber-200"
+      )}
+    >
+      Dossier {done}/{total}
     </span>
   );
 }
@@ -243,7 +279,13 @@ function NewProjectForm({ categories }: { categories: Category[] }) {
 // ---------------------------------------------------------------------------
 // Checklist
 // ---------------------------------------------------------------------------
-function Checklist({ project }: { project: NpdProject }) {
+function Checklist({
+  project,
+  dossier,
+}: {
+  project: NpdProject;
+  dossier: { done: number; total: number };
+}) {
   const [isPending, startTransition] = useTransition();
   const [msg, setMsg] = useState<Msg>(null);
 
@@ -311,6 +353,12 @@ function Checklist({ project }: { project: NpdProject }) {
                   {stage.linkLabel}
                 </Link>
               )}
+              {/* DVS permit stage: surface dossier completeness inline so the
+                  stage can't look done while documents are missing (checkbox
+                  stays free — no auto-tick, no blocking). */}
+              {stage.key === "DVS_PERMIT" && (
+                <DossierChip done={dossier.done} total={dossier.total} />
+              )}
               {stage.hasTargetDate && (
                 <span className="flex items-center gap-1.5 text-xs text-gray-500">
                   {stage.targetLabel}:
@@ -332,6 +380,228 @@ function Checklist({ project }: { project: NpdProject }) {
                 <span className="text-xs text-gray-400 ml-auto">
                   done {fmtTimestamp(row.done_at)}
                 </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// DVS dossier — documents required for the DVS permit application
+// ---------------------------------------------------------------------------
+function DvsDossier({
+  project,
+  dossier,
+}: {
+  project: NpdProject;
+  dossier: { done: number; total: number };
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const pendingType = useRef<NpdDocType | null>(null);
+
+  const byType = new Map<NpdDocType, NpdDocument[]>();
+  for (const d of project.npd_documents) {
+    const arr = byType.get(d.doc_type) ?? [];
+    arr.push(d);
+    byType.set(d.doc_type, arr);
+  }
+
+  function pickFile(docType: NpdDocType) {
+    setErr(null);
+    pendingType.current = docType;
+    inputRef.current?.click();
+  }
+
+  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    const docType = pendingType.current;
+    e.target.value = ""; // allow re-picking the same file
+    if (!file || !docType) return;
+
+    // Pre-flight the Server Action body limit — over it, Next.js rejects the
+    // POST with a 413 and the action never runs, so check here (same as
+    // purchase-orders doc-badge.tsx).
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setErr(
+        `File is ${formatBytes(file.size)} — over the ${MAX_UPLOAD_LABEL} limit. Compress it and retry.`
+      );
+      return;
+    }
+
+    setBusy("up:" + docType);
+    try {
+      const fd = new FormData();
+      fd.set("file", file);
+      const res = await uploadNpdDocument(project.id, docType, fd);
+      if (res.ok) router.refresh();
+      else setErr(res.error ?? "Upload failed");
+    } catch (ex) {
+      setErr(
+        `Upload failed: ${ex instanceof Error ? ex.message : "the server rejected the request"}`
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function openDoc(doc: NpdDocument) {
+    setBusy(doc.id);
+    setErr(null);
+    try {
+      const url = await getNpdDocUrl(doc.file_path);
+      if (url) window.open(url, "_blank");
+      else setErr("Could not open that document.");
+    } catch (ex) {
+      setErr(ex instanceof Error ? ex.message : "Could not open that document.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function handleDeleteDoc(doc: NpdDocument) {
+    if (!confirm(`Remove "${doc.file_name ?? "this file"}" from the dossier?`)) {
+      return;
+    }
+    setErr(null);
+    startTransition(async () => {
+      const res = await deleteNpdDocument(doc.id);
+      if (!res.ok) setErr(res.error ?? "Failed to remove document");
+    });
+  }
+
+  function toggleSpie() {
+    setErr(null);
+    startTransition(async () => {
+      const res = await setSpieApplicable(project.id, !project.spie_applicable);
+      if (!res.ok) setErr(res.error ?? "Failed to update SPIE flag");
+    });
+  }
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+          DVS dossier
+        </span>
+        <DossierChip done={dossier.done} total={dossier.total} />
+        {err && (
+          <span className="w-full text-[10px] leading-tight text-red-600" title={err}>
+            {err}
+          </span>
+        )}
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".pdf,.png,.jpg,.jpeg,.webp"
+        className="hidden"
+        onChange={onFile}
+      />
+      <ul className="divide-y divide-gray-50 rounded-lg border border-gray-100">
+        {NPD_DOC_TYPES.map((t) => {
+          const files = byType.get(t.key) ?? [];
+          const uploading = busy === "up:" + t.key;
+          const spieOff = t.key === "SPIE_LETTER" && !project.spie_applicable;
+          const latest = files.reduce<string | null>(
+            (max, f) =>
+              f.uploaded_at && (!max || f.uploaded_at > max) ? f.uploaded_at : max,
+            null
+          );
+
+          return (
+            <li
+              key={t.key}
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm"
+            >
+              <span className="min-w-0">
+                <span
+                  className={
+                    spieOff ? "text-gray-400 line-through" : "text-gray-800"
+                  }
+                >
+                  {t.label}
+                </span>
+                {t.caption && (
+                  <span className="block text-[10px] text-gray-400">
+                    {t.caption}
+                  </span>
+                )}
+              </span>
+
+              {spieOff ? (
+                <>
+                  <span className="text-xs text-gray-400">
+                    not applicable (fish-based product)
+                  </span>
+                  <button
+                    onClick={toggleSpie}
+                    disabled={isPending}
+                    className="text-xs text-blue-600 hover:underline disabled:opacity-50"
+                  >
+                    mark applicable
+                  </button>
+                </>
+              ) : (
+                <>
+                  {files.length > 0 ? (
+                    <span className="text-xs text-emerald-700 whitespace-nowrap">
+                      ✓ uploaded {files.length} file{files.length === 1 ? "" : "s"}
+                      {latest && `, latest ${fmtTimestamp(latest)}`}
+                    </span>
+                  ) : (
+                    <span className="inline-block text-xs font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
+                      missing
+                    </span>
+                  )}
+
+                  {files.map((f) => (
+                    <span key={f.id} className="flex items-center gap-0.5">
+                      <button
+                        onClick={() => openDoc(f)}
+                        disabled={busy === f.id}
+                        title={`Open ${f.file_name ?? "file"}`}
+                        className="text-xs text-blue-600 hover:underline disabled:opacity-50 max-w-[180px] truncate"
+                      >
+                        {busy === f.id ? "…" : f.file_name ?? "file"}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteDoc(f)}
+                        disabled={isPending}
+                        title="Remove from dossier"
+                        className="text-xs text-red-500 hover:text-red-700 disabled:opacity-50 px-0.5"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+
+                  <span className="ml-auto flex items-center gap-2 whitespace-nowrap">
+                    {t.key === "SPIE_LETTER" && (
+                      <button
+                        onClick={toggleSpie}
+                        disabled={isPending}
+                        className="text-[10px] text-gray-400 hover:text-gray-600 hover:underline disabled:opacity-50"
+                      >
+                        mark not applicable
+                      </button>
+                    )}
+                    <button
+                      onClick={() => pickFile(t.key)}
+                      disabled={uploading}
+                      title={`Upload ${t.label} (max ${MAX_UPLOAD_LABEL})`}
+                      className="text-xs px-2 py-0.5 rounded-md border border-gray-200 text-gray-600 hover:bg-brand/10 hover:text-brand disabled:opacity-50"
+                    >
+                      {uploading ? "Uploading…" : "Upload"}
+                    </button>
+                  </span>
+                </>
               )}
             </li>
           );
@@ -580,6 +850,8 @@ function ProjectCard({
   const [isPending, startTransition] = useTransition();
   const [msg, setMsg] = useState<Msg>(null);
 
+  const dossier = dossierProgress(project.npd_documents, project.spie_applicable);
+
   function handleSave(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setMsg(null);
@@ -731,7 +1003,8 @@ function ProjectCard({
           </p>
         )}
 
-        <Checklist project={project} />
+        <Checklist project={project} dossier={dossier} />
+        <DvsDossier project={project} dossier={dossier} />
         <Variations project={project} />
       </CardContent>
     </Card>

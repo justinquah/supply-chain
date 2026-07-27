@@ -5,8 +5,10 @@ import { requireRole, createClient } from "@/lib/supabase/server";
 import {
   NPD_STAGE_KEYS,
   NPD_STATUSES,
+  NPD_DOC_TYPE_KEYS,
   type NpdStageKey,
   type NpdStatus,
+  type NpdDocType,
 } from "./constants";
 
 type ActionResult = { ok: boolean; error?: string };
@@ -15,6 +17,19 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function isStage(v: string): v is NpdStageKey {
   return (NPD_STAGE_KEYS as string[]).includes(v);
+}
+
+function isDocType(v: string): v is NpdDocType {
+  return (NPD_DOC_TYPE_KEYS as string[]).includes(v);
+}
+
+// Storage-safe file-name slug (same as purchase-orders/actions.ts).
+function slug(s: string) {
+  return s.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
+}
+
+function isFile(v: FormDataEntryValue | null): v is File {
+  return !!v && typeof v !== "string" && (v as File).size > 0;
 }
 
 function isStatus(v: string): v is NpdStatus {
@@ -326,6 +341,110 @@ export async function setStageTargetDate(
     { project_id: projectId, stage, target_date: targetDate },
     { onConflict: "project_id,stage" }
   );
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/development");
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// DVS dossier documents
+// ---------------------------------------------------------------------------
+
+/**
+ * Upload one DVS dossier document for a project. Mirrors the purchase-orders
+ * uploadDoc pattern: file goes to the existing private `permit-docs` bucket
+ * (storage policies already allow authenticated writes there), then an
+ * npd_documents row records it. Multiple files per (project, doc_type) are
+ * allowed — e.g. two mock-ups.
+ */
+export async function uploadNpdDocument(
+  projectId: string,
+  docType: string,
+  formData: FormData
+): Promise<ActionResult> {
+  const profile = await requireRole("SCM", "ADMIN");
+  if (!projectId) return { ok: false, error: "Missing project id" };
+  if (!isDocType(docType)) return { ok: false, error: "Invalid document type" };
+
+  const file = formData.get("file");
+  if (!isFile(file)) return { ok: false, error: "No file selected" };
+
+  const supabase = await createClient();
+
+  const bucket = "permit-docs";
+  const path = `npd/${projectId}/${docType}/${Date.now()}_${slug(file.name)}`;
+  const buffer = Buffer.from(await file.arrayBuffer());
+
+  const { error: upErr } = await supabase.storage
+    .from(bucket)
+    .upload(path, buffer, {
+      contentType: file.type || "application/octet-stream",
+      upsert: true,
+    });
+  if (upErr) return { ok: false, error: `Upload failed: ${upErr.message}` };
+
+  const { error: docErr } = await supabase.from("npd_documents").insert({
+    project_id: projectId,
+    doc_type: docType,
+    file_path: `${bucket}/${path}`,
+    file_name: file.name,
+    uploaded_by: profile.id,
+  });
+  if (docErr) return { ok: false, error: `Record failed: ${docErr.message}` };
+
+  revalidatePath("/development");
+  return { ok: true };
+}
+
+// Short-lived signed URL for a dossier document (private bucket) — same
+// '<bucket>/<path>' slicing as purchase-orders getDocUrl.
+export async function getNpdDocUrl(filePath: string): Promise<string | null> {
+  await requireRole("SCM", "ADMIN");
+  const supabase = await createClient();
+  const slashIdx = filePath.indexOf("/");
+  const bucket = filePath.slice(0, slashIdx);
+  const path = filePath.slice(slashIdx + 1);
+  const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 300);
+  return data?.signedUrl ?? null;
+}
+
+/**
+ * Delete a dossier document row. DB row only — deleting the underlying
+ * storage object is super-admin-gated by the bucket's storage policies, so
+ * the file stays in `permit-docs` (orphaned) until an admin prunes it.
+ */
+export async function deleteNpdDocument(id: string): Promise<ActionResult> {
+  await requireRole("SCM", "ADMIN");
+  if (!id) return { ok: false, error: "Missing document id" };
+
+  const supabase = await createClient();
+  const { error } = await supabase.from("npd_documents").delete().eq("id", id);
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/development");
+  return { ok: true };
+}
+
+/**
+ * Flip whether the SPIE letter counts toward the project's dossier — SPIE is
+ * required only for NON-fish-ingredient pet food.
+ */
+export async function setSpieApplicable(
+  projectId: string,
+  applicable: boolean
+): Promise<ActionResult> {
+  await requireRole("SCM", "ADMIN");
+  if (!projectId) return { ok: false, error: "Missing project id" };
+
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("npd_projects")
+    .update({
+      spie_applicable: applicable,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", projectId);
   if (error) return { ok: false, error: error.message };
 
   revalidatePath("/development");
