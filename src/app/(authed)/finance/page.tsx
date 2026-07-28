@@ -99,7 +99,7 @@ export default async function FinancePage() {
     supabase
       .from("purchase_orders")
       .select(
-        "id, po_number, invoice_currency, deposit_percent, payment_terms, " +
+        "id, po_number, invoice_number, invoice_currency, deposit_percent, payment_terms, " +
           "deposit_due_date, balance_due_date, actual_eta, targeted_eta, supplier_id, " +
           "supplier:profiles!supplier_id(name, company_name)"
       )
@@ -567,6 +567,11 @@ export default async function FinancePage() {
                         >
                           {po.po_number || "Draft PO"}
                         </Link>
+                        {po.invoice_number && (
+                          <span className="text-sm text-gray-500 ml-2">
+                            Inv {po.invoice_number}
+                          </span>
+                        )}
                         {supplierName && (
                           <span className="text-sm text-gray-500 ml-2">
                             {supplierName}
@@ -638,6 +643,11 @@ export default async function FinancePage() {
                           className="font-medium text-gray-700 hover:underline"
                         >
                           {po.po_number || "Draft PO"}
+                          {po.invoice_number ? (
+                            <span className="text-gray-400 font-normal">
+                              {" "}· Inv {po.invoice_number}
+                            </span>
+                          ) : null}
                         </Link>
                         <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-medium">
                           Fully paid — {money(bal?.amount_paid, cur)}

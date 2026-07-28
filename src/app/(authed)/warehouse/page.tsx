@@ -2,6 +2,7 @@ import Link from "next/link";
 import { createClient, requireRole } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PO_WORKFLOW_LABELS, currentEtaToPort } from "@/lib/po-workflow";
+import { DocBadges } from "../purchase-orders/doc-badge";
 import {
   ArrivalCalendar,
   type ArrivalEntry,
@@ -37,7 +38,8 @@ export default async function WarehousePage() {
   const { data: posRaw } = await supabase
     .from("purchase_orders")
     .select(
-      "id, po_number, status, targeted_eta, actual_eta, container_arrived_at, " +
+      "id, po_number, status, targeted_eta, actual_eta, container_arrived_at, container_number, " +
+        "po_documents(id, doc_type, file_path, file_name), " +
         "supplier_eta, logistics_eta, eta_to_warehouse, clearance_status, " +
         "unload_completed_at, supplier:profiles!supplier_id(name, company_name)"
     )
@@ -119,6 +121,14 @@ export default async function WarehousePage() {
         poNumber: po.po_number as string | null,
         supplierName: supplier?.company_name || supplier?.name || null,
         eta: (po.eta_to_warehouse ?? currentEtaToPort(po)) as string | null,
+        containerNumber: (po.container_number as string | null) ?? null,
+        // Packing list only — that's the document Warehouse works from.
+        plDocs: ((po.po_documents ?? []) as {
+          id: string;
+          doc_type: string;
+          file_path: string;
+          file_name: string;
+        }[]).filter((d) => d.doc_type === "PACKING_LIST"),
       };
     })
     .sort((a, b) => {
@@ -189,6 +199,8 @@ export default async function WarehousePage() {
                   <tr className="text-gray-500 border-b border-gray-100 bg-gray-50 text-[11px] uppercase tracking-wide text-left">
                     <th className="py-2 pl-6 pr-3 font-semibold">PO #</th>
                     <th className="py-2 px-3 font-semibold">Supplier</th>
+                    <th className="py-2 px-3 font-semibold">Container</th>
+                    <th className="py-2 px-3 font-semibold">Packing list</th>
                     <th className="py-2 px-3 font-semibold">ETA to warehouse</th>
                     <th className="py-2 pr-6 pl-3 font-semibold text-right">Action</th>
                   </tr>
@@ -201,6 +213,17 @@ export default async function WarehousePage() {
                       </td>
                       <td className="py-2.5 px-3 text-gray-600">
                         {r.supplierName || "—"}
+                      </td>
+                      <td className="py-2.5 px-3 text-gray-600 whitespace-nowrap">
+                        {r.containerNumber || "—"}
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <DocBadges
+                          poId={r.poId}
+                          docs={r.plDocs}
+                          canUpload={false}
+                          types={["PACKING_LIST"]}
+                        />
                       </td>
                       <td className="py-2.5 px-3 text-gray-700 tabular-nums">
                         {fmtDate(r.eta)}

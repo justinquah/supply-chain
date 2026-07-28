@@ -34,10 +34,14 @@ export function DocBadges({
   poId,
   docs,
   canUpload = true,
+  types,
 }: {
   poId: string;
   docs: { id: string; doc_type: string; file_path: string; file_name: string }[];
   canUpload?: boolean;
+  /** Limit which badge types render (default: all). E.g. Warehouse shows only
+      the packing list. */
+  types?: string[];
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
@@ -82,11 +86,35 @@ export function DocBadges({
       return;
     }
 
+    // Some uploads carry references keyed at upload time — the invoice its
+    // number, the BL its BL number + container number — so SCM doesn't need a
+    // second step. The server requires the BL references unless the PO already
+    // has them, so a blank here is only accepted in that re-upload case.
+    let invoiceNumber = "";
+    let blNumber = "";
+    let containerNumber = "";
+    if (docType === "SUPPLIER_INVOICE") {
+      invoiceNumber = (
+        window.prompt("Invoice number (optional — leave blank to skip):") ?? ""
+      ).trim();
+    }
+    if (docType === "BL") {
+      blNumber = (
+        window.prompt("BL number (required unless already set on this PO):") ?? ""
+      ).trim();
+      containerNumber = (
+        window.prompt("Container number (required unless already set on this PO):") ?? ""
+      ).trim();
+    }
+
     setBusy("up:" + docType);
     try {
       const fd = new FormData();
       fd.set("doc_type", docType);
       fd.set("file", file);
+      if (invoiceNumber) fd.set("invoice_number", invoiceNumber);
+      if (blNumber) fd.set("bl_number", blNumber);
+      if (containerNumber) fd.set("container_number", containerNumber);
       const res = await uploadPoDocument(poId, fd);
       if (res.ok) router.refresh();
       else setErr(res.error ?? "Upload failed");
@@ -110,7 +138,7 @@ export function DocBadges({
         className="hidden"
         onChange={onFile}
       />
-      {ORDER.map((t) => {
+      {(types ?? ORDER).map((t) => {
         const doc = byType.get(t);
         const present = !!doc;
         const uploading = busy === "up:" + t;

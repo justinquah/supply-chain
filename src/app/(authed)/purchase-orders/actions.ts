@@ -273,6 +273,45 @@ export async function uploadPoDocument(
   const upErr = await uploadDoc(supabase, poId, docType, file, profile.id);
   if (upErr) return { ok: false, error: upErr };
 
+  // Some uploads carry references keyed at upload time: the supplier invoice
+  // its invoice number, the BL its BL number + container number. Written via
+  // the admin client because uploaders include FINANCE/LOGISTICS, whose RLS may
+  // not cover a purchase_orders update; the role gate above is the boundary.
+  // Blank never clears an existing value.
+  const refUpdate: Record<string, string> = {};
+  if (docType === "SUPPLIER_INVOICE") {
+    const invoiceNumber = String(formData.get("invoice_number") || "").trim();
+    if (invoiceNumber) refUpdate.invoice_number = invoiceNumber;
+  }
+  if (docType === "BL") {
+    const blNumber = String(formData.get("bl_number") || "").trim();
+    const containerNumber = String(formData.get("container_number") || "").trim();
+    if (blNumber) refUpdate.bl_number = blNumber;
+    if (containerNumber) refUpdate.container_number = containerNumber;
+    // A BL upload MUST leave the PO with both references (user rule 2026-07-28).
+    // Only demand what is still missing, so re-uploads don't force retyping.
+    const { data: cur } = await supabase
+      .from("purchase_orders")
+      .select("bl_number, container_number")
+      .eq("id", poId)
+      .maybeSingle();
+    const missing: string[] = [];
+    if (!blNumber && !cur?.bl_number) missing.push("BL number");
+    if (!containerNumber && !cur?.container_number) missing.push("container number");
+    if (missing.length > 0) {
+      // The file is already stored (kept — it is valid evidence); the caller
+      // must re-submit the missing reference(s).
+      return {
+        ok: false,
+        error: `The BL was stored, but the ${missing.join(" and ")} ${missing.length === 1 ? "is" : "are"} required — upload again with the number${missing.length === 1 ? "" : "s"} filled in.`,
+      };
+    }
+  }
+  if (Object.keys(refUpdate).length > 0) {
+    const admin = createAdminClient();
+    await admin.from("purchase_orders").update(refUpdate).eq("id", poId);
+  }
+
   // Doc-driven status: the uploaded document IS the evidence of the hand-off.
   //   PO PDF            → the PO exists in the system     → CREATED
   //   Supplier invoice  → the PO reached the supplier     → at least SENT

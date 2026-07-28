@@ -26,6 +26,8 @@ export function DocUpload({ poId }: { poId: string }) {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  // Selected doc type — a supplier invoice reveals the invoice-number field.
+  const [docType, setDocType] = useState("PO_PDF");
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -69,7 +71,12 @@ export function DocUpload({ poId }: { poId: string }) {
     >
       <label className="block">
         <span className="text-xs text-gray-500 block mb-1">Document type</span>
-        <select name="doc_type" defaultValue="PO_PDF" className={inputCls}>
+        <select
+          name="doc_type"
+          value={docType}
+          onChange={(e) => setDocType(e.target.value)}
+          className={inputCls}
+        >
           {DOC_TYPE_OPTIONS.map((o) => (
             <option key={o.value} value={o.value}>
               {o.label}
@@ -77,6 +84,40 @@ export function DocUpload({ poId }: { poId: string }) {
           ))}
         </select>
       </label>
+      {docType === "SUPPLIER_INVOICE" && (
+        <label className="block">
+          <span className="text-xs text-gray-500 block mb-1">
+            Invoice number (optional)
+          </span>
+          <input
+            name="invoice_number"
+            className={inputCls}
+            placeholder="INV-..."
+          />
+        </label>
+      )}
+      {docType === "BL" && (
+        <>
+          <label className="block">
+            <span className="text-xs text-gray-500 block mb-1">BL number</span>
+            <input
+              name="bl_number"
+              className={inputCls}
+              placeholder="required unless already set"
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-gray-500 block mb-1">
+              Container number
+            </span>
+            <input
+              name="container_number"
+              className={inputCls}
+              placeholder="required unless already set"
+            />
+          </label>
+        </>
+      )}
       <label className="block">
         <span className="text-xs text-gray-500 block mb-1">File</span>
         <input

@@ -78,7 +78,7 @@ export default async function PurchaseOrdersPage({
       supabase
         .from("purchase_orders")
         .select(
-          "id, po_number, status, invoice_number, invoice_amount, expected_invoice_amount, invoice_currency, product_group, created_at, supplier_id, targeted_eta, supplier_eta, logistics_eta, actual_eta, supplier:profiles!supplier_id(name, company_name), po_documents(id, doc_type, file_path, file_name)"
+          "id, po_number, status, invoice_number, container_number, invoice_amount, expected_invoice_amount, invoice_currency, product_group, created_at, supplier_id, targeted_eta, supplier_eta, logistics_eta, actual_eta, supplier:profiles!supplier_id(name, company_name), po_documents(id, doc_type, file_path, file_name)"
         )
         .order("created_at", { ascending: false }),
       // Phase-1 substitute: the SUPPLIER role was removed in migration 0011 (all SUPPLIER
@@ -234,6 +234,8 @@ export default async function PurchaseOrdersPage({
                   <th className="py-2.5 px-3 font-medium">Status</th>
                   <th className="py-2.5 px-3 font-medium">Supplier</th>
                   <th className="py-2.5 px-3 font-medium text-right">Amount</th>
+                  <th className="py-2.5 px-3 font-medium whitespace-nowrap">Invoice #</th>
+                  <th className="py-2.5 px-3 font-medium whitespace-nowrap">Container</th>
                   <th className="py-2.5 px-3 font-medium whitespace-nowrap">Expected ETA</th>
                   <th className="py-2.5 px-3 font-medium">Product range</th>
                   <th className="py-2.5 pr-4 pl-3 font-medium">Documents</th>
@@ -283,6 +285,12 @@ export default async function PurchaseOrdersPage({
                       </td>
                       <td className="py-2.5 px-3 text-right tabular-nums text-gray-600">
                         {money(amount, po.invoice_currency)}
+                      </td>
+                      <td className="py-2.5 px-3 text-gray-600 whitespace-nowrap max-w-[9rem] truncate" title={po.invoice_number ?? undefined}>
+                        {po.invoice_number || "—"}
+                      </td>
+                      <td className="py-2.5 px-3 text-gray-600 whitespace-nowrap max-w-[8rem] truncate" title={po.container_number ?? undefined}>
+                        {po.container_number || "—"}
                       </td>
                       <td
                         className="py-2.5 px-3 text-gray-600 whitespace-nowrap"
