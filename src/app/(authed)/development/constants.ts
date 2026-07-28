@@ -76,6 +76,62 @@ export const NPD_STAGE_KEYS: NpdStageKey[] = NPD_STAGES.map((s) => s.key);
 
 export const NPD_STAGE_COUNT = NPD_STAGES.length; // 7
 
+/**
+ * Checklist progress with N/A support: total = stages NOT marked
+ * not_applicable, done = stages done AND applicable. A stage that is done but
+ * later marked N/A counts as neither. Missing seed rows count as applicable
+ * not-done.
+ */
+export function checklistProgress(
+  rows: { stage: string; done: boolean; not_applicable?: boolean }[]
+): { done: number; total: number } {
+  const byStage = new Map(rows.map((r) => [r.stage, r]));
+  let done = 0;
+  let total = 0;
+  for (const key of NPD_STAGE_KEYS) {
+    const row = byStage.get(key);
+    if (row?.not_applicable) continue;
+    total += 1;
+    if (row?.done) done += 1;
+  }
+  return { done, total };
+}
+
+// ---------------------------------------------------------------------------
+// Project type + revision kinds — mirrors the npd_projects.project_type /
+// revision_kind CHECK constraints (migration 0046). revision_kind is set only
+// when project_type = 'REVISION'.
+// ---------------------------------------------------------------------------
+export const NPD_PROJECT_TYPES = ["NEW_PRODUCT", "REVISION"] as const;
+export type NpdProjectType = (typeof NPD_PROJECT_TYPES)[number];
+
+export const NPD_REVISION_KINDS = [
+  "FORMULA",
+  "PACKING_DESIGN",
+  "ADDED_VALUE",
+  "ADDED_FUNCTION",
+  "SIZE_CHANGE",
+  "OTHER",
+] as const;
+export type NpdRevisionKind = (typeof NPD_REVISION_KINDS)[number];
+
+export const NPD_REVISION_KIND_LABELS: Record<string, string> = {
+  FORMULA: "Formula revision",
+  PACKING_DESIGN: "Packing design",
+  ADDED_VALUE: "Added value",
+  ADDED_FUNCTION: "Added function",
+  SIZE_CHANGE: "Size change",
+  OTHER: "Other",
+};
+
+/** Supplier display name — company name first, personal name as fallback. */
+export function supplierDisplayName(
+  s: { name: string | null; company_name: string | null } | null | undefined
+): string | null {
+  if (!s) return null;
+  return s.company_name || s.name || null;
+}
+
 // ---------------------------------------------------------------------------
 // DVS dossier — documents required for the DVS permit application, mirrors
 // the npd_documents.doc_type CHECK constraint. Multiple files per type are

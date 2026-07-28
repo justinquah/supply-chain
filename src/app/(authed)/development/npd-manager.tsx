@@ -11,11 +11,13 @@ import {
   createNpdProject,
   updateNpdProject,
   deleteNpdProject,
+  setProjectSupplier,
   addVariation,
   updateVariation,
   deleteVariation,
   toggleChecklistStage,
   setStageTargetDate,
+  setStageNotApplicable,
   uploadNpdDocument,
   getNpdDocUrl,
   deleteNpdDocument,
@@ -23,20 +25,31 @@ import {
 } from "./actions";
 import {
   NPD_STAGES,
-  NPD_STAGE_COUNT,
   NPD_STATUSES,
   NPD_STATUS_LABELS,
   NPD_STATUS_BADGE,
   NPD_DOC_TYPES,
+  NPD_REVISION_KINDS,
+  NPD_REVISION_KIND_LABELS,
   dossierProgress,
+  checklistProgress,
+  supplierDisplayName,
   type NpdStageKey,
   type NpdDocType,
+  type NpdProjectType,
 } from "./constants";
 
 // ---------------------------------------------------------------------------
 // Types passed from the server page
 // ---------------------------------------------------------------------------
 export type Category = { id: string; name: string };
+
+/** Active supplier profile (role SUPPLIER) for the supplier pickers. */
+export type SupplierOption = {
+  id: string;
+  name: string | null;
+  company_name: string | null;
+};
 
 export type NpdVariation = {
   id: string;
@@ -56,6 +69,7 @@ export type NpdChecklistRow = {
   done: boolean;
   done_at: string | null;
   target_date: string | null;
+  not_applicable: boolean;
 };
 
 export type NpdDocument = {
@@ -74,6 +88,12 @@ export type NpdProject = {
   status: string;
   notes: string | null;
   spie_applicable: boolean;
+  supplier_id: string | null;
+  /** NEW_PRODUCT (default) or REVISION. */
+  project_type: string;
+  /** Revision kind key — set only when project_type = REVISION. */
+  revision_kind: string | null;
+  supplier: { name: string | null; company_name: string | null } | null;
   product_categories: Category | null;
   npd_variations: NpdVariation[];
   npd_checklist: NpdChecklistRow[];
@@ -117,6 +137,25 @@ function fmtRm(n: number | null): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+/** Indigo "Revision · {kind}" badge — NEW_PRODUCT projects render nothing. */
+function RevisionBadge({
+  projectType,
+  revisionKind,
+}: {
+  projectType: string;
+  revisionKind: string | null;
+}) {
+  if (projectType !== "REVISION") return null;
+  const kind = revisionKind
+    ? NPD_REVISION_KIND_LABELS[revisionKind] ?? revisionKind
+    : null;
+  return (
+    <span className="inline-block text-xs font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 whitespace-nowrap">
+      Revision{kind ? ` · ${kind}` : ""}
+    </span>
+  );
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -167,8 +206,15 @@ function DossierChip({ done, total }: { done: number; total: number }) {
 // ---------------------------------------------------------------------------
 // New project form
 // ---------------------------------------------------------------------------
-function NewProjectForm({ categories }: { categories: Category[] }) {
+function NewProjectForm({
+  categories,
+  suppliers,
+}: {
+  categories: Category[];
+  suppliers: SupplierOption[];
+}) {
   const [open, setOpen] = useState(false);
+  const [projectType, setProjectType] = useState<NpdProjectType>("NEW_PRODUCT");
   const [isPending, startTransition] = useTransition();
   const [msg, setMsg] = useState<Msg>(null);
 
@@ -183,10 +229,17 @@ function NewProjectForm({ categories }: { categories: Category[] }) {
         categoryId: String(fd.get("category_id") ?? ""),
         targetLaunchDate: String(fd.get("target_launch_date") ?? ""),
         variationNames: String(fd.get("variation_names") ?? ""),
+        supplierId: String(fd.get("supplier_id") ?? ""),
+        projectType,
+        revisionKind:
+          projectType === "REVISION"
+            ? String(fd.get("revision_kind") ?? "")
+            : null,
       });
       if (res.ok) {
         setMsg({ ok: true, text: "Project created" });
         form.reset();
+        setProjectType("NEW_PRODUCT");
         setOpen(false);
       } else {
         setMsg({ ok: false, text: res.error ?? "Failed to create project" });
@@ -211,6 +264,31 @@ function NewProjectForm({ categories }: { categories: Category[] }) {
         <form onSubmit={handleSubmit} className="space-y-3">
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
             New NPD project
+          </div>
+          {/* Type toggle — revision projects also pick a revision kind. */}
+          <div className="flex flex-wrap items-center gap-4 text-sm">
+            <label className="flex items-center gap-1.5 cursor-pointer select-none">
+              <input
+                type="radio"
+                name="project_type"
+                value="NEW_PRODUCT"
+                checked={projectType === "NEW_PRODUCT"}
+                onChange={() => setProjectType("NEW_PRODUCT")}
+                className="h-3.5 w-3.5"
+              />
+              <span className="text-gray-800">New product</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer select-none">
+              <input
+                type="radio"
+                name="project_type"
+                value="REVISION"
+                checked={projectType === "REVISION"}
+                onChange={() => setProjectType("REVISION")}
+                className="h-3.5 w-3.5"
+              />
+              <span className="text-gray-800">Revision of existing product</span>
+            </label>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="flex flex-col">
@@ -240,6 +318,39 @@ function NewProjectForm({ categories }: { categories: Category[] }) {
                 Target launch date
               </label>
               <input type="date" name="target_launch_date" className={inputCls} />
+            </div>
+            {projectType === "REVISION" && (
+              <div className="flex flex-col">
+                <label className="text-[10px] text-gray-500 mb-1">
+                  Revision kind *
+                </label>
+                <select
+                  name="revision_kind"
+                  required
+                  defaultValue=""
+                  className={inputCls}
+                >
+                  <option value="" disabled>
+                    — select kind —
+                  </option>
+                  {NPD_REVISION_KINDS.map((k) => (
+                    <option key={k} value={k}>
+                      {NPD_REVISION_KIND_LABELS[k]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div className="flex flex-col">
+              <label className="text-[10px] text-gray-500 mb-1">Supplier</label>
+              <select name="supplier_id" defaultValue="" className={inputCls}>
+                <option value="">— not decided yet —</option>
+                {suppliers.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {supplierDisplayName(s) ?? s.id}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="flex flex-col sm:col-span-3">
               <label className="text-[10px] text-gray-500 mb-1">
@@ -292,7 +403,10 @@ function Checklist({
   const byStage = new Map<string, NpdChecklistRow>();
   for (const row of project.npd_checklist) byStage.set(row.stage, row);
 
-  const doneCount = NPD_STAGES.filter((s) => byStage.get(s.key)?.done).length;
+  // done / applicable — N/A stages drop out of both sides of the count.
+  const { done: doneCount, total: applicableTotal } = checklistProgress(
+    project.npd_checklist
+  );
 
   function toggle(stage: NpdStageKey, done: boolean) {
     setMsg(null);
@@ -310,6 +424,14 @@ function Checklist({
     });
   }
 
+  function toggleNa(stage: NpdStageKey, notApplicable: boolean) {
+    setMsg(null);
+    startTransition(async () => {
+      const res = await setStageNotApplicable(project.id, stage, notApplicable);
+      if (!res.ok) setMsg({ ok: false, text: res.error ?? "Failed to update" });
+    });
+  }
+
   return (
     <div>
       <div className="flex items-center gap-3 mb-2">
@@ -319,32 +441,68 @@ function Checklist({
         <div className="flex-1 max-w-[160px] h-1.5 rounded-full bg-gray-100 overflow-hidden">
           <div
             className="h-full bg-brand rounded-full transition-all"
-            style={{ width: `${(doneCount / NPD_STAGE_COUNT) * 100}%` }}
+            style={{
+              width: `${
+                applicableTotal > 0 ? (doneCount / applicableTotal) * 100 : 0
+              }%`,
+            }}
           />
         </div>
         <span className="text-xs text-gray-600 tabular-nums font-medium">
-          {doneCount}/{NPD_STAGE_COUNT}
+          {doneCount}/{applicableTotal}
         </span>
         <MsgText msg={msg} />
       </div>
       <ul className="space-y-1">
         {NPD_STAGES.map((stage) => {
           const row = byStage.get(stage.key);
+          const na = row?.not_applicable ?? false;
           const done = row?.done ?? false;
           return (
             <li key={stage.key} className="flex flex-wrap items-center gap-2 text-sm">
-              <label className="flex items-center gap-2 cursor-pointer select-none">
+              <label
+                className={cn(
+                  "flex items-center gap-2 select-none",
+                  na ? "cursor-not-allowed" : "cursor-pointer"
+                )}
+              >
                 <input
                   type="checkbox"
                   checked={done}
-                  disabled={isPending}
+                  disabled={isPending || na}
                   onChange={(e) => toggle(stage.key, e.target.checked)}
-                  className="h-4 w-4 rounded border-gray-300 accent-current"
+                  className="h-4 w-4 rounded border-gray-300 accent-current disabled:opacity-40"
                 />
-                <span className={done ? "text-gray-400 line-through" : "text-gray-800"}>
+                <span
+                  className={
+                    na
+                      ? "text-gray-300 line-through"
+                      : done
+                        ? "text-gray-400 line-through"
+                        : "text-gray-800"
+                  }
+                >
                   {stage.label}
                 </span>
               </label>
+              {na && (
+                <span className="inline-block text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-400 border border-gray-200">
+                  n/a
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => toggleNa(stage.key, !na)}
+                disabled={isPending}
+                title={
+                  na
+                    ? "Mark this stage applicable again"
+                    : "Mark this stage not applicable (drops out of the count)"
+                }
+                className="text-[10px] text-gray-400 hover:text-gray-600 hover:underline disabled:opacity-50"
+              >
+                {na ? "mark applicable" : "N/A"}
+              </button>
               {stage.href && (
                 <Link
                   href={stage.href}
@@ -837,14 +995,96 @@ function Variations({ project }: { project: NpdProject }) {
 }
 
 // ---------------------------------------------------------------------------
+// Supplier inline editor — name + a small select that saves on pick
+// ---------------------------------------------------------------------------
+function SupplierInline({
+  project,
+  suppliers,
+}: {
+  project: NpdProject;
+  suppliers: SupplierOption[];
+}) {
+  const [editing, setEditing] = useState(false);
+  const [isPending, startTransition] = useTransition();
+  const [msg, setMsg] = useState<Msg>(null);
+
+  const currentName = supplierDisplayName(project.supplier);
+  // Current supplier may be missing from the active list (e.g. deactivated) —
+  // keep it selectable so the select doesn't silently show the wrong value.
+  const hasCurrent =
+    !project.supplier_id || suppliers.some((s) => s.id === project.supplier_id);
+
+  function save(value: string) {
+    setMsg(null);
+    startTransition(async () => {
+      const res = await setProjectSupplier(project.id, value || null);
+      if (res.ok) setEditing(false);
+      else setMsg({ ok: false, text: res.error ?? "Failed to save supplier" });
+    });
+  }
+
+  if (!editing) {
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-gray-500">
+        Supplier:{" "}
+        <span className={currentName ? "text-gray-700" : "text-gray-400"}>
+          {currentName ?? "not decided yet"}
+        </span>
+        <button
+          onClick={() => setEditing(true)}
+          disabled={isPending}
+          className="text-blue-600 hover:underline disabled:opacity-50"
+        >
+          edit
+        </button>
+        <MsgText msg={msg} />
+      </span>
+    );
+  }
+
+  return (
+    <span className="flex items-center gap-1.5 text-xs">
+      <select
+        defaultValue={project.supplier_id ?? ""}
+        disabled={isPending}
+        onChange={(e) => save(e.target.value)}
+        className="border border-gray-200 rounded-md px-1.5 py-0.5 text-xs text-gray-700"
+      >
+        <option value="">— not decided yet —</option>
+        {!hasCurrent && project.supplier_id && (
+          <option value={project.supplier_id}>
+            {currentName ?? "(current supplier)"}
+          </option>
+        )}
+        {suppliers.map((s) => (
+          <option key={s.id} value={s.id}>
+            {supplierDisplayName(s) ?? s.id}
+          </option>
+        ))}
+      </select>
+      <button
+        onClick={() => setEditing(false)}
+        disabled={isPending}
+        className="text-gray-500 hover:underline disabled:opacity-50"
+      >
+        cancel
+      </button>
+      <MsgText msg={msg} />
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Project card
 // ---------------------------------------------------------------------------
 function ProjectCard({
   project,
   categories,
+  suppliers,
 }: {
   project: NpdProject;
   categories: Category[];
+  suppliers: SupplierOption[];
 }) {
   const [editing, setEditing] = useState(false);
   const [isPending, startTransition] = useTransition();
@@ -968,11 +1208,16 @@ function ProjectCard({
         ) : (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <span className="font-semibold text-gray-900">{project.name}</span>
+            <RevisionBadge
+              projectType={project.project_type}
+              revisionKind={project.revision_kind}
+            />
             {project.product_categories && (
               <span className="inline-block text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200">
                 {project.product_categories.name}
               </span>
             )}
+            <SupplierInline project={project} suppliers={suppliers} />
             <StatusBadge status={project.status} />
             <span className="text-xs text-gray-500">
               Launch: {fmtDate(project.target_launch_date)}
@@ -1023,9 +1268,11 @@ const STATUS_GROUP_ORDER: Record<string, number> = {
 export function NpdManager({
   projects,
   categories,
+  suppliers,
 }: {
   projects: NpdProject[];
   categories: Category[];
+  suppliers: SupplierOption[];
 }) {
   const [showOthers, setShowOthers] = useState(false);
 
@@ -1039,7 +1286,7 @@ export function NpdManager({
 
   return (
     <div className="space-y-4">
-      <NewProjectForm categories={categories} />
+      <NewProjectForm categories={categories} suppliers={suppliers} />
 
       {projects.length === 0 ? (
         <Card>
@@ -1050,7 +1297,12 @@ export function NpdManager({
       ) : (
         <>
           {active.map((p) => (
-            <ProjectCard key={p.id} project={p} categories={categories} />
+            <ProjectCard
+              key={p.id}
+              project={p}
+              categories={categories}
+              suppliers={suppliers}
+            />
           ))}
 
           {others.length > 0 && (
@@ -1064,7 +1316,12 @@ export function NpdManager({
               </button>
               {showOthers &&
                 others.map((p) => (
-                  <ProjectCard key={p.id} project={p} categories={categories} />
+                  <ProjectCard
+                    key={p.id}
+                    project={p}
+                    categories={categories}
+                    suppliers={suppliers}
+                  />
                 ))}
             </div>
           )}

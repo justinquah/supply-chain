@@ -6,9 +6,13 @@ import {
   NPD_STAGE_KEYS,
   NPD_STATUSES,
   NPD_DOC_TYPE_KEYS,
+  NPD_PROJECT_TYPES,
+  NPD_REVISION_KINDS,
   type NpdStageKey,
   type NpdStatus,
   type NpdDocType,
+  type NpdProjectType,
+  type NpdRevisionKind,
 } from "./constants";
 
 type ActionResult = { ok: boolean; error?: string };
@@ -34,6 +38,14 @@ function isFile(v: FormDataEntryValue | null): v is File {
 
 function isStatus(v: string): v is NpdStatus {
   return (NPD_STATUSES as readonly string[]).includes(v);
+}
+
+function isProjectType(v: string): v is NpdProjectType {
+  return (NPD_PROJECT_TYPES as readonly string[]).includes(v);
+}
+
+function isRevisionKind(v: string): v is NpdRevisionKind {
+  return (NPD_REVISION_KINDS as readonly string[]).includes(v);
 }
 
 function textOrNull(v: string | null | undefined): string | null {
@@ -84,6 +96,9 @@ export async function createNpdProject(input: {
   categoryId?: string | null;
   targetLaunchDate?: string | null;
   variationNames?: string | null;
+  supplierId?: string | null;
+  projectType?: string | null;
+  revisionKind?: string | null;
 }): Promise<ActionResult> {
   const profile = await requireRole("SCM", "ADMIN");
   const supabase = await createClient();
@@ -96,6 +111,19 @@ export async function createNpdProject(input: {
     return { ok: false, error: "Invalid target launch date" };
   }
 
+  // Project type defaults to NEW_PRODUCT; revision_kind only for REVISION.
+  const projectType = textOrNull(input.projectType) ?? "NEW_PRODUCT";
+  if (!isProjectType(projectType)) {
+    return { ok: false, error: "Invalid project type" };
+  }
+  let revisionKind: string | null = null;
+  if (projectType === "REVISION") {
+    revisionKind = textOrNull(input.revisionKind);
+    if (revisionKind === null || !isRevisionKind(revisionKind)) {
+      return { ok: false, error: "Revision kind is required for a revision" };
+    }
+  }
+
   const variationNames = parseVariationNames(input.variationNames);
 
   const { data: project, error } = await supabase
@@ -104,6 +132,9 @@ export async function createNpdProject(input: {
       name,
       category_id: textOrNull(input.categoryId),
       target_launch_date: targetLaunchDate,
+      supplier_id: textOrNull(input.supplierId),
+      project_type: projectType,
+      revision_kind: revisionKind,
       created_by: profile.id,
     })
     .select("id")
@@ -180,6 +211,31 @@ export async function updateNpdProject(
     .from("npd_projects")
     .update(update)
     .eq("id", id);
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/development");
+  return { ok: true };
+}
+
+/**
+ * Set/clear the project's supplier (profiles row with role SUPPLIER).
+ * Pass null to clear ("not decided yet").
+ */
+export async function setProjectSupplier(
+  projectId: string,
+  supplierId: string | null
+): Promise<ActionResult> {
+  await requireRole("SCM", "ADMIN");
+  if (!projectId) return { ok: false, error: "Missing project id" };
+
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("npd_projects")
+    .update({
+      supplier_id: textOrNull(supplierId),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", projectId);
   if (error) return { ok: false, error: error.message };
 
   revalidatePath("/development");
@@ -339,6 +395,31 @@ export async function setStageTargetDate(
   const supabase = await createClient();
   const { error } = await supabase.from("npd_checklist").upsert(
     { project_id: projectId, stage, target_date: targetDate },
+    { onConflict: "project_id,stage" }
+  );
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/development");
+  return { ok: true };
+}
+
+/**
+ * Flip a stage's not-applicable flag. An N/A stage drops out of the
+ * checklist's done/total counts entirely (done state is left untouched so
+ * un-marking N/A restores whatever was there before).
+ */
+export async function setStageNotApplicable(
+  projectId: string,
+  stage: string,
+  notApplicable: boolean
+): Promise<ActionResult> {
+  await requireRole("SCM", "ADMIN");
+  if (!projectId) return { ok: false, error: "Missing project id" };
+  if (!isStage(stage)) return { ok: false, error: "Invalid stage" };
+
+  const supabase = await createClient();
+  const { error } = await supabase.from("npd_checklist").upsert(
+    { project_id: projectId, stage, not_applicable: notApplicable },
     { onConflict: "project_id,stage" }
   );
   if (error) return { ok: false, error: error.message };

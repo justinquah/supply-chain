@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { cn } from "@/lib/utils";
-import { NPD_STAGE_COUNT } from "./constants";
+import { NPD_STAGE_COUNT, NPD_REVISION_KIND_LABELS } from "./constants";
 
 // ---------------------------------------------------------------------------
 // Types passed from the server page
@@ -13,13 +13,32 @@ export type CalendarProject = {
   category: string | null;
   /** target_launch_date as "YYYY-MM-DD", or null when not set yet. */
   date: string | null;
-  /** Checklist stages ticked done (out of NPD_STAGE_COUNT = 7). */
+  /** Checklist stages done AND applicable (not marked N/A). */
   doneCount: number;
+  /** Applicable checklist stages (7 minus N/A stages). */
+  stageTotal?: number;
   /** DVS dossier completeness (doc types with >=1 file / applicable types). */
   dossierDone?: number;
   dossierTotal?: number;
   status: "ACTIVE" | "LAUNCHED";
+  /** NEW_PRODUCT (default) or REVISION. */
+  projectType?: string | null;
+  /** Revision kind key (set only for REVISION projects). */
+  revisionKind?: string | null;
 };
+
+/** Indigo "Revision · {kind}" badge; renders nothing for NEW_PRODUCT. */
+function RevisionBadge({ project }: { project: CalendarProject }) {
+  if (project.projectType !== "REVISION") return null;
+  const kind = project.revisionKind
+    ? NPD_REVISION_KIND_LABELS[project.revisionKind] ?? project.revisionKind
+    : null;
+  return (
+    <span className="inline-block text-xs font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 whitespace-nowrap">
+      Revision{kind ? ` · ${kind}` : ""}
+    </span>
+  );
+}
 
 type Props = {
   /** ACTIVE + LAUNCHED projects only (on-hold/cancelled stay off the calendar). */
@@ -59,8 +78,14 @@ function daysBetween(from: string, to: string): number {
   );
 }
 
-function ProgressChip({ doneCount }: { doneCount: number }) {
-  const complete = doneCount >= NPD_STAGE_COUNT;
+function ProgressChip({
+  doneCount,
+  total = NPD_STAGE_COUNT,
+}: {
+  doneCount: number;
+  total?: number;
+}) {
+  const complete = doneCount >= total;
   return (
     <span
       className={cn(
@@ -70,7 +95,7 @@ function ProgressChip({ doneCount }: { doneCount: number }) {
           : "bg-gray-100 text-gray-600 border border-gray-200"
       )}
     >
-      {doneCount}/{NPD_STAGE_COUNT}
+      {doneCount}/{total}
     </span>
   );
 }
@@ -198,10 +223,10 @@ export function LaunchCalendar({
                       ? "bg-emerald-50 text-emerald-800"
                       : "bg-blue-50 text-blue-800"
                   )}
-                  title={`${p.name} · ${p.doneCount}/${NPD_STAGE_COUNT}`}
+                  title={`${p.name} · ${p.doneCount}/${p.stageTotal ?? NPD_STAGE_COUNT}`}
                 >
                   <div className="font-medium truncate">
-                    {p.name} · {p.doneCount}/{NPD_STAGE_COUNT}
+                    {p.name} · {p.doneCount}/{p.stageTotal ?? NPD_STAGE_COUNT}
                   </div>
                   {p.category && (
                     <div className="opacity-70 truncate">{p.category}</div>
@@ -246,11 +271,12 @@ export function LaunchCalendar({
                   className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm"
                 >
                   <span className="font-medium text-gray-900">{p.name}</span>
+                  <RevisionBadge project={p} />
                   <span className="text-gray-500">{p.category ?? "—"}</span>
                   <span className="text-gray-600 whitespace-nowrap">
                     {fmtDate(p.date!)}
                   </span>
-                  <ProgressChip doneCount={p.doneCount} />
+                  <ProgressChip doneCount={p.doneCount} total={p.stageTotal} />
                   {p.dossierTotal != null && p.dossierDone != null && (
                     <span
                       className={cn(
@@ -291,8 +317,9 @@ export function LaunchCalendar({
                 className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm"
               >
                 <span className="font-medium text-gray-900">{p.name}</span>
+                <RevisionBadge project={p} />
                 <span className="text-gray-500">{p.category ?? "—"}</span>
-                <ProgressChip doneCount={p.doneCount} />
+                <ProgressChip doneCount={p.doneCount} total={p.stageTotal} />
               </li>
             ))}
           </ul>
