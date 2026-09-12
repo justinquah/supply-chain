@@ -6,6 +6,9 @@ import {
   CLEARANCE_STATUSES,
   CLEARANCE_LABELS,
   CLEARANCE_COLORS,
+  ETA_CATEGORIES,
+  ETA_CATEGORY_LABELS,
+  type EtaCategory,
 } from "@/lib/po-workflow";
 import {
   updateEtd,
@@ -34,33 +37,55 @@ function fmtDate(d: string | null | undefined) {
 }
 
 // A labelled read value with an optional inline date editor shown only when the
-// current role may edit it. Saves via the passed server action.
+// current role may edit it. Saves via the passed server action. When the user
+// picks a date LATER than the current one, the category+reason inputs appear
+// and are required — this is the audit trail the SCM needs to attribute the
+// slip (supplier / logistics / customs / other).
 function DateField({
   label,
   value,
   editable,
   onSave,
   hint,
+  defaultCategory,
 }: {
   label: string;
   value: string | null | undefined;
   editable: boolean;
-  onSave: (date: string | null) => Promise<Result>;
+  onSave: (
+    date: string | null,
+    category?: EtaCategory | null,
+    reason?: string | null,
+  ) => Promise<Result>;
   hint?: string;
+  defaultCategory?: EtaCategory;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value ?? "");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [category, setCategory] = useState<EtaCategory>(
+    defaultCategory || "OTHER"
+  );
+  const [reason, setReason] = useState("");
+
+  // Show reason/category as required only when the user pushes the date LATER
+  // than the current one. Empty draft = clearing; earlier draft = expedite.
+  const isSlip = !!(value && draft && draft > value);
 
   async function save() {
     setSaving(true);
     setErr(null);
-    const res = await onSave(draft || null);
+    const res = await onSave(
+      draft || null,
+      isSlip ? category : (reason.trim() ? category : null),
+      reason.trim() || null,
+    );
     setSaving(false);
     if (res.ok) {
       setEditing(false);
+      setReason("");
       router.refresh();
     } else {
       setErr(res.error || "Failed");
@@ -78,11 +103,35 @@ function DateField({
             onChange={(e) => setDraft(e.target.value)}
             className={inputCls}
           />
+          {isSlip && (
+            <div className="rounded-md bg-amber-50 border border-amber-200 p-2 space-y-1.5">
+              <div className="text-[11px] text-amber-800 font-medium">
+                Pushing date later — reason required
+              </div>
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value as EtaCategory)}
+                className={inputCls}
+              >
+                {ETA_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {ETA_CATEGORY_LABELS[c]}
+                  </option>
+                ))}
+              </select>
+              <input
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="e.g. factory shutdown, port congestion"
+                className={inputCls}
+              />
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={save}
-              disabled={saving}
+              disabled={saving || (isSlip && !reason.trim())}
               className="text-xs px-2 py-1 rounded bg-brand text-white disabled:opacity-50"
             >
               {saving ? "Saving…" : "Save"}
@@ -92,6 +141,7 @@ function DateField({
               onClick={() => {
                 setEditing(false);
                 setDraft(value ?? "");
+                setReason("");
                 setErr(null);
               }}
               className="text-xs text-gray-500 hover:text-gray-800"
@@ -161,13 +211,17 @@ export function ShipmentForms({
           label="ETD (departure)"
           value={data.etd}
           editable={caps.canEtd}
-          onSave={(d) => updateEtd(poId, d)}
+          onSave={(d, cat, reason) => updateEtd(poId, d, cat ?? null, reason ?? null)}
+          defaultCategory="SUPPLIER_DELAY"
         />
         <DateField
           label="Targeted ETA (SCM)"
           value={data.targeted_eta}
           editable={caps.canTargeted}
-          onSave={(d) => updateTargetedEta(poId, d)}
+          onSave={(d, cat, reason) =>
+            updateTargetedEta(poId, d, cat ?? null, reason ?? null)
+          }
+          defaultCategory="OTHER"
         />
         <DateField
           label="Supplier ETA"
@@ -180,7 +234,10 @@ export function ShipmentForms({
           label="Logistics ETA"
           value={data.logistics_eta}
           editable={caps.canLogistics}
-          onSave={(d) => updateLogisticsEta(poId, d)}
+          onSave={(d, cat, reason) =>
+            updateLogisticsEta(poId, d, cat ?? null, reason ?? null)
+          }
+          defaultCategory="LOGISTICS_DELAY"
         />
         <div>
           <span className="text-xs text-gray-500 block mb-1">
@@ -197,14 +254,20 @@ export function ShipmentForms({
           label="Actual port arrival"
           value={data.actual_eta}
           editable={caps.canActual}
-          onSave={(d) => updateActualPortArrival(poId, d)}
+          onSave={(d, cat, reason) =>
+            updateActualPortArrival(poId, d, cat ?? null, reason ?? null)
+          }
           hint="Setting this re-anchors the balance due date"
+          defaultCategory="LOGISTICS_DELAY"
         />
         <DateField
           label="ETA to warehouse"
           value={data.eta_to_warehouse}
           editable={caps.canWarehouseEta}
-          onSave={(d) => updateEtaToWarehouse(poId, d)}
+          onSave={(d, cat, reason) =>
+            updateEtaToWarehouse(poId, d, cat ?? null, reason ?? null)
+          }
+          defaultCategory="CUSTOMS_DELAY"
         />
         <ClearanceField
           poId={poId}

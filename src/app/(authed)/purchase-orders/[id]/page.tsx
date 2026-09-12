@@ -13,10 +13,13 @@ import { ShipmentForms } from "./shipment-forms";
 import { ReceiptProofLink } from "./receipt-proof-link";
 import { OceanFreightCell } from "./ocean-freight-cell";
 import { EmailSupplierButton } from "../email-supplier-button";
+import { AmendmentsPanel, type AmendmentLineRow } from "./amendments-panel";
 import { poIssuedEmail } from "@/lib/supplier-email";
 import {
   PO_WORKFLOW_COLORS,
   PO_WORKFLOW_LABELS,
+  ETA_CATEGORY_LABELS,
+  type EtaCategory,
   canActOnState,
   waitingOnLabel,
   currentEtaToPort,
@@ -87,6 +90,8 @@ export default async function PurchaseOrderDetailPage({
     { data: products },
     { data: incoming },
     { data: fxRows },
+    { data: etaChanges },
+    { data: amendments },
   ] =
     await Promise.all([
       supabase
@@ -94,7 +99,7 @@ export default async function PurchaseOrderDetailPage({
         .select(
           "id, po_number, status, currency, invoice_currency, product_group, supplier_id, " +
             "expected_invoice_amount, deposit_percent, payment_terms, deposit_due_date, balance_due_date, " +
-            "invoice_amount, invoice_number, invoice_date, targeted_eta, actual_eta, notes, created_at, " +
+            "invoice_amount, invoice_number, invoice_date, credit_note_amount, credit_note_number, effective_invoice_amount, targeted_eta, actual_eta, notes, created_at, " +
             "etd, supplier_eta, logistics_eta, eta_to_warehouse, clearance_status, eta_delayed, delay_reason, " +
             "container_number, bl_number, container_arrived_at, unload_completed_at, received_qty, damaged_qty, receipt_remark, receipt_proof_path, " +
             "ocean_freight_cost, ocean_freight_currency, " +
@@ -130,6 +135,21 @@ export default async function PurchaseOrderDetailPage({
         .order("expected_date"),
       // FX to MYR for the landed-total conversion.
       supabase.from("fx_rates").select("currency, rate_to_myr"),
+      // ETA change audit rows (migration 0047) — shown as an "ETA change history"
+      // strip so the SCM can see who slipped what and when.
+      supabase
+        .from("po_eta_changes")
+        .select("id, column_name, old_value, new_value, category, reason, changed_at, changed_by:profiles!changed_by(name)")
+        .eq("po_id", id)
+        .order("changed_at", { ascending: false })
+        .limit(50),
+      // Quantity amendments + finance credit-note actions (migration 0047)
+      supabase
+        .from("po_amendments")
+        .select("id, reason, old_invoice_amount, revised_invoice_amount, credit_note_expected, notes, amended_at, amended_by:profiles!amended_by(name), lines:po_amendment_lines(product:products(sku, name, variation), old_quantity, new_quantity)")
+        .eq("po_id", id)
+        .order("amended_at", { ascending: false })
+        .limit(20),
     ]);
 
   if (!po) notFound();
@@ -149,6 +169,17 @@ export default async function PurchaseOrderDetailPage({
       : `${p.name} (${p.sku})`,
   }));
   const incomingRows = (incoming ?? []) as any[];
+
+  // Amendment lines: same shape the AmendmentsPanel expects. Each row maps 1:1
+  // to a live incoming_stock line — the server action reads incomingStockId back.
+  const amendmentLines: AmendmentLineRow[] = incomingRows.map((r: any) => ({
+    incomingStockId: String(r.id),
+    productSku: String(r.product?.sku ?? ""),
+    productLabel: r.product?.product_family
+      ? `${r.product.product_family}${r.product.variation ? " · " + r.product.variation : ""}`
+      : String(r.product?.name ?? "—"),
+    oldQty: Number(r.quantity) || 0,
+  }));
 
   // The joined supplier / po_documents shapes aren't in the generated DB types,
   // so treat the row loosely (consistent with the list page).
@@ -216,6 +247,11 @@ export default async function PurchaseOrderDetailPage({
   // Who-edits-what matrix for the Shipment & ETA card (see actions.ts).
   const isScmAdmin = role === "SCM" || role === "ADMIN";
   const isLogistics = role === "LOGISTICS" || isScmAdmin;
+  // Amendment gate: SCM/ADMIN own quantities; FINANCE/ACCOUNTS own the credit
+  // note path. Both surface once the PO reached the supplier.
+  const canAmend =
+    (["SCM", "ADMIN", "FINANCE", "ACCOUNTS"].includes(role)) &&
+    ["SENT", "SHIPPED", "RECEIVED", "COMPLETED"].includes(String(poRow.status));
   const shipmentCaps = {
     canEtd: isScmAdmin,
     canTargeted: isScmAdmin,
@@ -382,6 +418,7 @@ export default async function PurchaseOrderDetailPage({
         </CardHeader>
         <CardContent className="space-y-4">
           <ShipmentForms data={shipmentData} caps={shipmentCaps} />
+          <EtaHistorySection changes={(etaChanges ?? []) as any[]} />
           {poRow.bl_number && (
             <p className="text-sm text-gray-600">
               BL number: <span className="font-medium">{poRow.bl_number}</span>
@@ -418,6 +455,55 @@ export default async function PurchaseOrderDetailPage({
           )}
         </CardContent>
       </Card>
+
+      {/* Amendments & credit notes — quantity / invoice reconciliation once the
+          PO has reached the supplier. Visible to SCM / ADMIN / FINANCE / ACCOUNTS.
+          Also renders any prior amendments as a compact history. */}
+      {(canAmend || (amendments && amendments.length > 0)) && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Amendments &amp; credit notes</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {canAmend && (
+              <AmendmentsPanel
+                poId={poRow.id}
+                currency={cur}
+                lines={amendmentLines}
+                currentInvoiceAmount={
+                  (poRow.invoice_amount as number | null) ?? null
+                }
+              />
+            )}
+            {poRow.credit_note_number != null && (
+              <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-sm">
+                <div className="text-xs text-gray-500 mb-1">Credit note recorded</div>
+                <div className="flex flex-wrap items-baseline gap-4">
+                  <span>
+                    <span className="text-gray-500">No.: </span>
+                    <span className="font-medium">{poRow.credit_note_number}</span>
+                  </span>
+                  <span>
+                    <span className="text-gray-500">Amount: </span>
+                    <span className="font-medium tabular-nums">
+                      {money(poRow.credit_note_amount, cur)}
+                    </span>
+                  </span>
+                  <span>
+                    <span className="text-gray-500">Effective payable: </span>
+                    <span className="font-medium tabular-nums">
+                      {money(poRow.effective_invoice_amount, cur)}
+                    </span>
+                  </span>
+                </div>
+              </div>
+            )}
+            {amendments && amendments.length > 0 && (
+              <AmendmentHistorySection amendments={amendments as any[]} currency={cur} />
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Documents */}
       <Card>
@@ -622,6 +708,138 @@ function Detail({ label, value }: { label: string; value: React.ReactNode }) {
     <div>
       <span className="text-xs text-gray-500 block mb-1">{label}</span>
       <span className="text-gray-900">{value}</span>
+    </div>
+  );
+}
+
+// -------------------------------------------------------------------------
+// ETA change history — reads po_eta_changes for the PO and renders each
+// column change with actor + category + reason so the SCM can see whether a
+// slip was caused by the supplier, logistics, or customs.
+// -------------------------------------------------------------------------
+const ETA_LABEL: Record<string, string> = {
+  etd: "ETD",
+  targeted_eta: "Targeted ETA",
+  supplier_eta: "Supplier ETA",
+  logistics_eta: "Logistics ETA",
+  actual_eta: "Actual port arrival",
+  eta_to_warehouse: "ETA to warehouse",
+};
+
+function EtaHistorySection({ changes }: { changes: any[] }) {
+  if (!changes || changes.length === 0) return null;
+  return (
+    <div className="border-t border-gray-100 pt-3">
+      <div className="text-xs font-medium text-gray-700 mb-2">
+        ETA change history
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-left text-gray-500 border-b border-gray-100">
+              <th className="py-1 pr-3">When</th>
+              <th className="py-1 pr-3">Who</th>
+              <th className="py-1 pr-3">Column</th>
+              <th className="py-1 pr-3">Old → New</th>
+              <th className="py-1 pr-3">Cause</th>
+              <th className="py-1 pr-3">Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {changes.map((c: any) => {
+              const cat = (c.category as EtaCategory | null) ?? null;
+              const catLabel = cat && ETA_CATEGORY_LABELS[cat] ? ETA_CATEGORY_LABELS[cat] : "—";
+              return (
+                <tr key={c.id} className="border-b border-gray-50">
+                  <td className="py-1 pr-3 text-gray-500 whitespace-nowrap">
+                    {date(c.changed_at)}
+                  </td>
+                  <td className="py-1 pr-3 text-gray-700">
+                    {c.changed_by?.name ?? "—"}
+                  </td>
+                  <td className="py-1 pr-3 text-gray-700">
+                    {ETA_LABEL[String(c.column_name)] ?? c.column_name}
+                  </td>
+                  <td className="py-1 pr-3 text-gray-700 whitespace-nowrap">
+                    {c.old_value ?? "—"} <span className="text-gray-400">→</span>{" "}
+                    {c.new_value ?? "—"}
+                  </td>
+                  <td className="py-1 pr-3 text-gray-700">{catLabel}</td>
+                  <td className="py-1 pr-3 text-gray-600">
+                    {c.reason ?? <span className="text-gray-400">—</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// -------------------------------------------------------------------------
+// Amendment history — reads po_amendments + po_amendment_lines and shows each
+// past amendment as a mini-block (who, when, invoice change, per-line diffs).
+// -------------------------------------------------------------------------
+function AmendmentHistorySection({
+  amendments,
+  currency,
+}: {
+  amendments: any[];
+  currency: string | null;
+}) {
+  if (!amendments || amendments.length === 0) return null;
+  return (
+    <div className="border-t border-gray-100 pt-3">
+      <div className="text-xs font-medium text-gray-700 mb-2">
+        Amendment history
+      </div>
+      <ul className="space-y-3">
+        {amendments.map((a: any) => (
+          <li
+            key={a.id}
+            className="rounded-md border border-gray-200 bg-white p-2 text-xs space-y-1"
+          >
+            <div className="flex flex-wrap items-baseline gap-3">
+              <span className="text-gray-500">{date(a.amended_at)}</span>
+              <span className="text-gray-700">
+                by <span className="font-medium">{a.amended_by?.name ?? "—"}</span>
+              </span>
+              <span className="text-gray-700">Reason: {a.reason ?? "—"}</span>
+            </div>
+            <div className="text-gray-700">
+              {a.revised_invoice_amount != null ? (
+                <>
+                  Invoice: {money(a.old_invoice_amount, currency)}{" "}
+                  <span className="text-gray-400">→</span>{" "}
+                  {money(a.revised_invoice_amount, currency)}
+                </>
+              ) : a.credit_note_expected ? (
+                <span className="text-amber-700">
+                  Credit note expected (invoice unchanged)
+                </span>
+              ) : (
+                <span className="text-gray-500">Invoice unchanged</span>
+              )}
+            </div>
+            {a.lines && a.lines.length > 0 && (
+              <ul className="mt-1 ml-3 list-disc space-y-0.5 text-gray-600">
+                {a.lines.map((line: any, i: number) => (
+                  <li key={i}>
+                    {line.product?.variation ??
+                      line.product?.name ??
+                      line.product?.sku ??
+                      "—"}
+                    : {line.old_quantity} → {line.new_quantity}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {a.notes && <div className="text-gray-500 italic">{a.notes}</div>}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

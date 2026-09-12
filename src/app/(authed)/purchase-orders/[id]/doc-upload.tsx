@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { uploadPoDocument } from "../actions";
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, formatBytes } from "@/lib/constants";
+import { ETA_CATEGORIES, ETA_CATEGORY_LABELS } from "@/lib/po-workflow";
 
 // Friendly labels for each doc_type enum value (default = PO PDF).
 const DOC_TYPE_OPTIONS: { value: string; label: string }[] = [
@@ -15,6 +16,7 @@ const DOC_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "K1_DRAFT", label: "K1 (draft)" },
   { value: "K1_FINAL", label: "K1 (final)" },
   { value: "LOGISTICS_INVOICE", label: "Logistics invoice" },
+  { value: "CREDIT_NOTE", label: "Credit note" },
 ];
 
 const inputCls =
@@ -95,6 +97,52 @@ export function DocUpload({ poId }: { poId: string }) {
             placeholder="INV-..."
           />
         </label>
+      )}
+      {docType === "K1_FINAL" && (
+        <>
+          <label className="block">
+            <span className="text-xs text-gray-500 block mb-1">
+              Update warehouse ETA (optional)
+            </span>
+            <input
+              type="date"
+              name="eta_to_warehouse"
+              className={inputCls}
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-gray-500 block mb-1">
+              Update actual port arrival (optional)
+            </span>
+            <input
+              type="date"
+              name="actual_eta"
+              className={inputCls}
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-gray-500 block mb-1">
+              ETA change category
+            </span>
+            <select name="eta_category" className={inputCls} defaultValue="CUSTOMS_DELAY">
+              {ETA_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {ETA_CATEGORY_LABELS[c]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block flex-1 min-w-[200px]">
+            <span className="text-xs text-gray-500 block mb-1">
+              Reason for ETA change (required if pushing later)
+            </span>
+            <input
+              name="eta_reason"
+              className={inputCls}
+              placeholder="e.g. cleared 2 days late"
+            />
+          </label>
+        </>
       )}
       {docType === "BL" && (
         <>

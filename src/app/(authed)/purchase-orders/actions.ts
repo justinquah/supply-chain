@@ -8,6 +8,10 @@ import {
   PO_WORKFLOW_STATES,
   canActOnState,
   isClearanceStatus,
+  isEtaSlip,
+  isEtaCategory,
+  type EtaCategory,
+  type EtaColumn,
 } from "@/lib/po-workflow";
 import {
   readRule,
@@ -26,6 +30,7 @@ const BUCKET: Record<string, string> = {
   K1_DRAFT: "shipping-docs",
   K1_FINAL: "shipping-docs",
   LOGISTICS_INVOICE: "invoices",
+  CREDIT_NOTE: "invoices",
 };
 
 function slug(s: string) {
@@ -310,6 +315,78 @@ export async function uploadPoDocument(
   if (Object.keys(refUpdate).length > 0) {
     const admin = createAdminClient();
     await admin.from("purchase_orders").update(refUpdate).eq("id", poId);
+  }
+
+  // K1_FINAL uploads may carry an ETA update too — customs clearance is when
+  // logistics learns the true warehouse ETA. Optional fields; when supplied,
+  // both the write AND the po_eta_changes audit row are recorded.
+  if (docType === "K1_FINAL") {
+    const etaWarehouse = parseDateInput(formData.get("eta_to_warehouse"));
+    const etaActual = parseDateInput(formData.get("actual_eta"));
+    const etaReason = String(formData.get("eta_reason") || "").trim() || null;
+    const etaCategoryRaw = String(formData.get("eta_category") || "").trim();
+    const etaCategory = isEtaCategory(etaCategoryRaw)
+      ? (etaCategoryRaw as EtaCategory)
+      : "CUSTOMS_DELAY";
+
+    if (etaWarehouse || etaActual) {
+      const admin = createAdminClient();
+      const { data: preRow } = await admin
+        .from("purchase_orders")
+        .select("eta_to_warehouse, actual_eta")
+        .eq("id", poId)
+        .maybeSingle();
+      const oldWh = (preRow?.eta_to_warehouse as string | null) ?? null;
+      const oldActual = (preRow?.actual_eta as string | null) ?? null;
+
+      const etaUpdate: Record<string, string | null> = {};
+      if (etaWarehouse !== null) etaUpdate.eta_to_warehouse = etaWarehouse;
+      if (etaActual !== null) etaUpdate.actual_eta = etaActual;
+
+      // Slip gate for K1 too — same policy as the standalone ETA writers.
+      if (etaWarehouse && isEtaSlip(oldWh, etaWarehouse) && !etaReason) {
+        return {
+          ok: false,
+          error: "A reason is required when the K1 pushes warehouse ETA later.",
+        };
+      }
+      if (etaActual && isEtaSlip(oldActual, etaActual) && !etaReason) {
+        return {
+          ok: false,
+          error: "A reason is required when the K1 pushes actual arrival later.",
+        };
+      }
+
+      const { error: etaErr } = await admin
+        .from("purchase_orders")
+        .update(etaUpdate)
+        .eq("id", poId);
+      if (etaErr) return { ok: false, error: etaErr.message };
+
+      const noteBase = etaReason || "Set at K1 upload";
+      if (etaWarehouse !== null) {
+        await logEtaChange({
+          poId,
+          column: "eta_to_warehouse",
+          oldValue: oldWh,
+          newValue: etaWarehouse,
+          category: etaCategory,
+          reason: noteBase,
+          actorId: profile.id,
+        });
+      }
+      if (etaActual !== null) {
+        await logEtaChange({
+          poId,
+          column: "actual_eta",
+          oldValue: oldActual,
+          newValue: etaActual,
+          category: etaCategory,
+          reason: noteBase,
+          actorId: profile.id,
+        });
+      }
+    }
   }
 
   // Doc-driven status: the uploaded document IS the evidence of the hand-off.
@@ -796,6 +873,14 @@ export async function approvePO(formData: FormData): Promise<ActionResult> {
   const upErr = await uploadDoc(supabase, poId, "PO_PDF", file, profile.id);
   if (upErr) return { ok: false, error: upErr };
 
+  // Snapshot the previous targeted_eta so we can log an audit row after the write.
+  const { data: preRow } = await supabase
+    .from("purchase_orders")
+    .select("targeted_eta")
+    .eq("id", poId)
+    .maybeSingle();
+  const oldTargetedEta = (preRow?.targeted_eta as string | null) ?? null;
+
   const { error } = await supabase
     .from("purchase_orders")
     .update({
@@ -807,6 +892,18 @@ export async function approvePO(formData: FormData): Promise<ActionResult> {
     })
     .eq("id", poId);
   if (error) return { ok: false, error: error.message };
+
+  // Auto-audit: approving a PO implies "SCM confirmed this ETA" — no reason
+  // required, but the row shows who set it and when.
+  await logEtaChange({
+    poId,
+    column: "targeted_eta",
+    oldValue: oldTargetedEta,
+    newValue: targetedEta,
+    category: "OTHER",
+    reason: "Set at PO approval",
+    actorId: profile.id,
+  });
 
   revalidatePath("/purchase-orders");
   revalidatePath(`/purchase-orders/${poId}`);
@@ -911,11 +1008,11 @@ export async function markShipped(formData: FormData): Promise<ActionResult> {
     if (e) return { ok: false, error: e };
   }
 
-  // Fetch po_number + targeted_eta up front — needed for the incoming_stock
-  // expected_date fallback and notes.
+  // Fetch po_number + ETAs up front — needed for the incoming_stock
+  // expected_date fallback, notes, and the ETA-change audit rows below.
   const { data: poRow } = await supabase
     .from("purchase_orders")
-    .select("po_number, targeted_eta")
+    .select("po_number, targeted_eta, etd, logistics_eta, actual_eta")
     .eq("id", poId)
     .maybeSingle();
 
@@ -936,6 +1033,37 @@ export async function markShipped(formData: FormData): Promise<ActionResult> {
     .update(update)
     .eq("id", poId);
   if (error) return { ok: false, error: error.message };
+
+  // Log every ETA column touched by this SHIPPED transition. category="OTHER"
+  // because the reason is captured by the workflow event itself.
+  await logEtaChange({
+    poId, column: "actual_eta",
+    oldValue: (poRow?.actual_eta as string | null) ?? null,
+    newValue: actualEta,
+    category: "OTHER",
+    reason: "Set when PO marked shipped",
+    actorId: profile.id,
+  });
+  if (etd) {
+    await logEtaChange({
+      poId, column: "etd",
+      oldValue: (poRow?.etd as string | null) ?? null,
+      newValue: etd,
+      category: "OTHER",
+      reason: "Set when PO marked shipped",
+      actorId: profile.id,
+    });
+  }
+  if (logisticsEta) {
+    await logEtaChange({
+      poId, column: "logistics_eta",
+      oldValue: (poRow?.logistics_eta as string | null) ?? null,
+      newValue: logisticsEta,
+      category: "OTHER",
+      reason: "Set when PO marked shipped",
+      actorId: profile.id,
+    });
+  }
 
   // Shipping lines -> incoming_stock (dashboard's "Incoming" reads this table).
   // incoming_stock RLS write is SCM/ADMIN only, so LOGISTICS writes go through
@@ -1167,6 +1295,97 @@ function parseDateInput(raw: FormDataEntryValue | null): string | null {
   return s;
 }
 
+// ---------------------------------------------------------------------------
+// ETA change audit (migration 0047 — po_eta_changes)
+// ---------------------------------------------------------------------------
+// All ETA-column writes go through updateEtaColumn so we get a uniform audit
+// row plus consistent "delay requires reason" gating. logEtaChange logs an
+// already-applied change (used by multi-field transitions like markShipped
+// where the writer wants to control the update itself).
+
+type EtaChangeOpts = {
+  poId: string;
+  column: EtaColumn;
+  newValue: string | null;
+  category?: EtaCategory | null;
+  reason?: string | null;
+  actorId: string;
+};
+
+async function updateEtaColumn(opts: EtaChangeOpts): Promise<ActionResult> {
+  const supabase = await createClient();
+
+  // Old value is snapshot before update so audit rows carry a real diff.
+  const { data: existing, error: readErr } = await supabase
+    .from("purchase_orders")
+    .select(opts.column)
+    .eq("id", opts.poId)
+    .maybeSingle();
+  if (readErr) return { ok: false, error: readErr.message };
+  const oldVal: string | null = ((existing ?? {}) as Record<string, unknown>)[opts.column] as
+    | string
+    | null
+    ?? null;
+
+  const cat = opts.category && isEtaCategory(opts.category) ? opts.category : null;
+  const reasonTrimmed = opts.reason?.trim() || null;
+
+  // Slip = new date is strictly later than old. Requires a reason so the SCM
+  // record answers "supplier or other conditions".
+  if (isEtaSlip(oldVal, opts.newValue) && (!cat || !reasonTrimmed)) {
+    return {
+      ok: false,
+      error: "A category and reason are required when pushing an ETA later.",
+    };
+  }
+
+  const { error: updErr } = await supabase
+    .from("purchase_orders")
+    .update({ [opts.column]: opts.newValue })
+    .eq("id", opts.poId);
+  if (updErr) return { ok: false, error: updErr.message };
+
+  // Log only when the value actually changed; a redundant write shouldn't
+  // pollute the history.
+  if ((oldVal ?? "") !== (opts.newValue ?? "")) {
+    await supabase.from("po_eta_changes").insert({
+      po_id: opts.poId,
+      column_name: opts.column,
+      old_value: oldVal,
+      new_value: opts.newValue,
+      category: cat,
+      reason: reasonTrimmed,
+      changed_by: opts.actorId,
+    });
+  }
+  return { ok: true };
+}
+
+// Log-only variant — for multi-field writes where the caller already updated
+// purchase_orders itself (markShipped / approvePO / applyPoTiming). Records a
+// history row without re-writing the column. Silently skips no-op transitions.
+async function logEtaChange(opts: {
+  poId: string;
+  column: EtaColumn;
+  oldValue: string | null;
+  newValue: string | null;
+  category?: EtaCategory | null;
+  reason?: string | null;
+  actorId: string;
+}): Promise<void> {
+  if ((opts.oldValue ?? "") === (opts.newValue ?? "")) return;
+  const supabase = await createClient();
+  await supabase.from("po_eta_changes").insert({
+    po_id: opts.poId,
+    column_name: opts.column,
+    old_value: opts.oldValue,
+    new_value: opts.newValue,
+    category: opts.category && isEtaCategory(opts.category) ? opts.category : null,
+    reason: opts.reason?.trim() || null,
+    changed_by: opts.actorId,
+  });
+}
+
 // NOTE on payment due dates: deposit_due_date / balance_due_date are DERIVED
 // columns owned by the DB trigger trg_po_payment_terms. Every ETA write below
 // re-fires that trigger, which re-anchors the due dates from the effective ETA
@@ -1181,73 +1400,87 @@ function revalidatePo(poId: string) {
 
 // updateEtd — internal callers only (SCM/ADMIN). Suppliers set ETD via the
 // supplier portal action (see supplier/actions.ts updateSupplierDates).
-export async function updateEtd(poId: string, etd: string | null): Promise<ActionResult> {
+export async function updateEtd(
+  poId: string,
+  etd: string | null,
+  category?: EtaCategory | null,
+  reason?: string | null,
+): Promise<ActionResult> {
   const profile = await getCurrentUser();
   if (!profile) return { ok: false, error: "Not signed in" };
   if (!["SCM", "ADMIN"].includes(profile.role as string))
     return { ok: false, error: "Only SCM or Admin can set ETD here" };
   const value = parseDateInput(etd);
-  const supabase = await createClient();
-  const { error } = await supabase
-    .from("purchase_orders")
-    .update({ etd: value })
-    .eq("id", poId);
-  if (error) return { ok: false, error: error.message };
-  revalidatePo(poId);
-  return { ok: true };
+  const res = await updateEtaColumn({
+    poId, column: "etd", newValue: value,
+    category, reason, actorId: profile.id,
+  });
+  if (res.ok) revalidatePo(poId);
+  return res;
 }
 
 // updateTargetedEta — SCM's ideal ETA-to-port (also set in approvePO).
-export async function updateTargetedEta(poId: string, date: string | null): Promise<ActionResult> {
+export async function updateTargetedEta(
+  poId: string,
+  date: string | null,
+  category?: EtaCategory | null,
+  reason?: string | null,
+): Promise<ActionResult> {
   const profile = await getCurrentUser();
   if (!profile) return { ok: false, error: "Not signed in" };
   if (!["SCM", "ADMIN"].includes(profile.role as string))
     return { ok: false, error: "Only SCM or Admin can set the targeted ETA" };
   const value = parseDateInput(date);
-  const supabase = await createClient();
-  const { error } = await supabase
-    .from("purchase_orders")
-    .update({ targeted_eta: value })
-    .eq("id", poId);
-  if (error) return { ok: false, error: error.message };
-  revalidatePo(poId);
-  return { ok: true };
+  const res = await updateEtaColumn({
+    poId, column: "targeted_eta", newValue: value,
+    category, reason, actorId: profile.id,
+  });
+  if (res.ok) revalidatePo(poId);
+  return res;
 }
 
 // updateLogisticsEta — LOGISTICS/SCM/ADMIN. The trigger re-anchors the payment
 // due dates from the new effective ETA when the PO carries a rule.
-export async function updateLogisticsEta(poId: string, date: string | null): Promise<ActionResult> {
+export async function updateLogisticsEta(
+  poId: string,
+  date: string | null,
+  category?: EtaCategory | null,
+  reason?: string | null,
+): Promise<ActionResult> {
   const profile = await getCurrentUser();
   if (!profile) return { ok: false, error: "Not signed in" };
   if (!["LOGISTICS", "SCM", "ADMIN"].includes(profile.role as string))
     return { ok: false, error: "Only Logistics, SCM or Admin can set the logistics ETA" };
   const value = parseDateInput(date);
-  const supabase = await createClient();
-  const { error } = await supabase
-    .from("purchase_orders")
-    .update({ logistics_eta: value })
-    .eq("id", poId);
-  if (error) return { ok: false, error: error.message };
-  revalidatePo(poId);
-  return { ok: true };
+  const res = await updateEtaColumn({
+    poId, column: "logistics_eta", newValue: value,
+    category, reason, actorId: profile.id,
+  });
+  if (res.ok) revalidatePo(poId);
+  return res;
 }
 
 // updateEtaToWarehouse — LOGISTICS/SCM/ADMIN. Does not affect payment anchor.
-export async function updateEtaToWarehouse(poId: string, date: string | null): Promise<ActionResult> {
+export async function updateEtaToWarehouse(
+  poId: string,
+  date: string | null,
+  category?: EtaCategory | null,
+  reason?: string | null,
+): Promise<ActionResult> {
   const profile = await getCurrentUser();
   if (!profile) return { ok: false, error: "Not signed in" };
   if (!["LOGISTICS", "SCM", "ADMIN"].includes(profile.role as string))
     return { ok: false, error: "Only Logistics, SCM or Admin can set the warehouse ETA" };
   const value = parseDateInput(date);
-  const supabase = await createClient();
-  const { error } = await supabase
-    .from("purchase_orders")
-    .update({ eta_to_warehouse: value })
-    .eq("id", poId);
-  if (error) return { ok: false, error: error.message };
-  revalidatePo(poId);
-  revalidatePath("/warehouse");
-  return { ok: true };
+  const res = await updateEtaColumn({
+    poId, column: "eta_to_warehouse", newValue: value,
+    category, reason, actorId: profile.id,
+  });
+  if (res.ok) {
+    revalidatePo(poId);
+    revalidatePath("/warehouse");
+  }
+  return res;
 }
 
 // updateClearanceStatus — LOGISTICS/SCM/ADMIN. Validated against the enum.
@@ -1367,6 +1600,20 @@ export async function applyPoTiming(
 
   const admin = createAdminClient();
 
+  // Snapshot the ETA field this action will touch, so we can log a
+  // po_eta_changes row after the write.
+  const etaColumn: EtaColumn =
+    actionType === "delay" ? "eta_to_warehouse" : "logistics_eta";
+  const { data: preRow } = await admin
+    .from("purchase_orders")
+    .select(etaColumn)
+    .eq("id", poId)
+    .maybeSingle();
+  const oldEtaVal = ((preRow ?? {}) as Record<string, unknown>)[etaColumn] as
+    | string
+    | null
+    ?? null;
+
   // 1. Update the PO's ETA fields per the action taken.
   //    delay  → push the warehouse ETA out + flag the delay.
   //    expedite → pull the logistics ETA forward + clear the delay flag.
@@ -1386,6 +1633,20 @@ export async function applyPoTiming(
     .update(poUpdate)
     .eq("id", poId);
   if (poErr) return { ok: false, error: poErr.message };
+
+  // Audit the ETA move — category maps to the workflow intent.
+  await logEtaChange({
+    poId,
+    column: etaColumn,
+    oldValue: oldEtaVal,
+    newValue: chosenEta,
+    category: actionType === "delay" ? "OTHER" : "EXPEDITE",
+    reason:
+      actionType === "delay"
+        ? "Insights delay action (overstock)"
+        : "Insights expedite action",
+    actorId: profile.id,
+  });
 
   // 2. Re-date the PO's in-transit lines so the dashboard re-buckets by ETA.
   const { error: incErr } = await admin
@@ -1417,19 +1678,198 @@ export async function applyPoTiming(
 // updateActualPortArrival — LOGISTICS/SCM/ADMIN. The actual arrival is the
 // highest-priority ETA source, so the trigger re-anchors the payment due dates
 // off it when the PO carries a rule.
-export async function updateActualPortArrival(poId: string, date: string | null): Promise<ActionResult> {
+export async function updateActualPortArrival(
+  poId: string,
+  date: string | null,
+  category?: EtaCategory | null,
+  reason?: string | null,
+): Promise<ActionResult> {
   const profile = await getCurrentUser();
   if (!profile) return { ok: false, error: "Not signed in" };
   if (!["LOGISTICS", "SCM", "ADMIN"].includes(profile.role as string))
     return { ok: false, error: "Only Logistics, SCM or Admin can set the actual port arrival" };
   const value = parseDateInput(date);
+  const res = await updateEtaColumn({
+    poId, column: "actual_eta", newValue: value,
+    category, reason, actorId: profile.id,
+  });
+  if (res.ok) {
+    revalidatePo(poId);
+    revalidatePath("/warehouse");
+  }
+  return res;
+}
+
+// ---------------------------------------------------------------------------
+// PO AMENDMENTS — supplier shipped less than ordered (or over-ordered later
+// negotiated down). Amends per-line quantities in incoming_stock and either
+// overwrites invoice_amount (supplier reissued the invoice) or flags that a
+// credit note is expected (finance attaches it via recordCreditNote below).
+// Every amendment writes a full row into po_amendments plus one
+// po_amendment_lines row per line changed, so the trail is queryable.
+// ---------------------------------------------------------------------------
+
+export type AmendmentLineInput = {
+  incomingStockId: string;
+  newQuantity: number;
+};
+
+export async function amendPoQuantities(input: {
+  poId: string;
+  lines: AmendmentLineInput[];
+  reason: string;
+  revisedInvoiceAmount?: number | null;
+  creditNoteExpected?: boolean;
+  notes?: string | null;
+}): Promise<ActionResult> {
+  // SCM/ADMIN own quantity edits; FINANCE/ACCOUNTS can amend the invoice half
+  // when they receive a credit note.
+  const profile = await requireRole("SCM", "ADMIN", "FINANCE", "ACCOUNTS");
+  if (!input.poId) return { ok: false, error: "Missing PO" };
+  if (!input.reason?.trim())
+    return { ok: false, error: "A reason is required for the amendment" };
+
   const supabase = await createClient();
-  const { error } = await supabase
+  const status = await getPoStatus(supabase, input.poId);
+  // Amendments only make sense once the PO reached the supplier (SENT onward).
+  const validStates = ["SENT", "SHIPPED", "RECEIVED", "COMPLETED"];
+  if (!validStates.includes(String(status)))
+    return {
+      ok: false,
+      error: `Quantities can only be amended once the PO is Sent or later (current: ${status})`,
+    };
+
+  // Snapshot the current invoice_amount so the audit row reflects the diff.
+  const { data: poBefore } = await supabase
     .from("purchase_orders")
-    .update({ actual_eta: value })
+    .select("invoice_amount")
+    .eq("id", input.poId)
+    .maybeSingle();
+  const oldInvoiceAmount =
+    (poBefore?.invoice_amount as number | null) ?? null;
+
+  // Fetch existing lines so we can capture old_quantity per amended line and
+  // reject lines that belong to a different PO (defense-in-depth).
+  const targetIds = input.lines.map((l) => l.incomingStockId).filter(Boolean);
+  if (targetIds.length === 0)
+    return { ok: false, error: "No lines to amend" };
+
+  const { data: existingLines, error: exErr } = await supabase
+    .from("incoming_stock")
+    .select("id, product_id, quantity, po_id")
+    .in("id", targetIds);
+  if (exErr) return { ok: false, error: exErr.message };
+  const linesById = new Map(
+    (existingLines ?? []).map((l) => [String(l.id), l])
+  );
+
+  const admin = createAdminClient();
+
+  // Write the amendment header first so the child rows can reference it.
+  const revisedAmt =
+    input.revisedInvoiceAmount != null && Number.isFinite(input.revisedInvoiceAmount)
+      ? Number(input.revisedInvoiceAmount)
+      : null;
+
+  const { data: amendRow, error: hdrErr } = await admin
+    .from("po_amendments")
+    .insert({
+      po_id: input.poId,
+      amended_by: profile.id,
+      reason: input.reason.trim(),
+      old_invoice_amount: oldInvoiceAmount,
+      revised_invoice_amount: revisedAmt,
+      credit_note_expected: !!input.creditNoteExpected,
+      notes: input.notes?.trim() || null,
+    })
+    .select("id")
+    .single();
+  if (hdrErr || !amendRow) {
+    return { ok: false, error: hdrErr?.message || "Amendment failed" };
+  }
+
+  // Per-line writes + amendment_lines rows.
+  const amendmentId = amendRow.id;
+  for (const patch of input.lines) {
+    const existing = linesById.get(patch.incomingStockId);
+    if (!existing) continue;
+    if (String(existing.po_id) !== input.poId) continue; // wrong PO — skip
+    const oldQty = Number(existing.quantity);
+    const newQty = Number(patch.newQuantity);
+    if (!Number.isFinite(newQty) || newQty < 0) continue;
+    if (oldQty === newQty) continue;
+
+    const { error: updErr } = await admin
+      .from("incoming_stock")
+      .update({ quantity: newQty })
+      .eq("id", patch.incomingStockId);
+    if (updErr) return { ok: false, error: updErr.message };
+
+    await admin.from("po_amendment_lines").insert({
+      amendment_id: amendmentId,
+      incoming_stock_id: patch.incomingStockId,
+      product_id: existing.product_id,
+      old_quantity: oldQty,
+      new_quantity: newQty,
+    });
+  }
+
+  // Overwrite invoice_amount when the caller supplied a corrected value.
+  if (revisedAmt != null) {
+    const { error: invErr } = await admin
+      .from("purchase_orders")
+      .update({ invoice_amount: revisedAmt })
+      .eq("id", input.poId);
+    if (invErr) return { ok: false, error: invErr.message };
+  }
+
+  // expected_invoice_amount re-derives from the amended lines.
+  await recomputePoAmount(admin, input.poId);
+
+  revalidatePo(input.poId);
+  revalidatePath("/dashboard");
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// RECORD CREDIT NOTE — finance path. Sets purchase_orders.credit_note_amount +
+// credit_note_number and (optionally) uploads the credit-note document. The
+// PO's effective_invoice_amount (generated column) auto-updates from these.
+// ---------------------------------------------------------------------------
+export async function recordCreditNote(formData: FormData): Promise<ActionResult> {
+  const profile = await requireRole("SCM", "ADMIN", "FINANCE", "ACCOUNTS");
+  const supabase = await createClient();
+
+  const poId = String(formData.get("po_id") || "").trim();
+  if (!poId) return { ok: false, error: "Missing PO" };
+
+  const creditNoteNumber = String(formData.get("credit_note_number") || "").trim();
+  const rawAmount = formData.get("credit_note_amount");
+  const creditNoteAmount =
+    rawAmount != null && String(rawAmount).trim() !== ""
+      ? Number(rawAmount)
+      : null;
+  if (creditNoteAmount == null || !Number.isFinite(creditNoteAmount) || creditNoteAmount < 0)
+    return { ok: false, error: "A non-negative credit note amount is required" };
+  if (!creditNoteNumber)
+    return { ok: false, error: "Credit note number is required" };
+
+  const file = formData.get("file");
+  if (isFile(file)) {
+    const upErr = await uploadDoc(supabase, poId, "CREDIT_NOTE", file, profile.id);
+    if (upErr) return { ok: false, error: upErr };
+  }
+
+  const admin = createAdminClient();
+  const { error } = await admin
+    .from("purchase_orders")
+    .update({
+      credit_note_amount: creditNoteAmount,
+      credit_note_number: creditNoteNumber,
+    })
     .eq("id", poId);
   if (error) return { ok: false, error: error.message };
+
   revalidatePo(poId);
-  revalidatePath("/warehouse");
   return { ok: true };
 }

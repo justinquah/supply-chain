@@ -31,7 +31,8 @@ function parseDate(raw: string | null | undefined): string | null {
 export async function updateSupplierDates(
   poId: string,
   etd: string | null,
-  supplierEta: string | null
+  supplierEta: string | null,
+  reason?: string | null,
 ): Promise<{ ok: boolean; error?: string }> {
   const me = await requireRole("SUPPLIER", "SCM", "ADMIN");
   const supabase = await createClient();
@@ -39,7 +40,7 @@ export async function updateSupplierDates(
   // Ownership check — the security boundary for the row.
   const { data: po } = await supabase
     .from("purchase_orders")
-    .select("id")
+    .select("id, etd, supplier_eta")
     .eq("id", poId)
     .eq("supplier_id", me.id)
     .maybeSingle();
@@ -47,6 +48,23 @@ export async function updateSupplierDates(
 
   const etdValue = parseDate(etd);
   const supplierEtaValue = parseDate(supplierEta);
+  const oldEtd = (po.etd as string | null) ?? null;
+  const oldSupplierEta = (po.supplier_eta as string | null) ?? null;
+  const reasonTrimmed = reason?.trim() || null;
+
+  // Delay gate — supplier pushing a date OUT must supply a reason so the SCM
+  // can understand what caused the slip.
+  if (oldEtd && etdValue && etdValue > oldEtd && !reasonTrimmed) {
+    return { ok: false, error: "A reason is required when pushing ETD later." };
+  }
+  if (
+    oldSupplierEta &&
+    supplierEtaValue &&
+    supplierEtaValue > oldSupplierEta &&
+    !reasonTrimmed
+  ) {
+    return { ok: false, error: "A reason is required when pushing supplier ETA later." };
+  }
 
   const admin = createAdminClient();
 
@@ -62,6 +80,31 @@ export async function updateSupplierDates(
     .eq("id", poId)
     .eq("supplier_id", me.id);
   if (error) return { ok: false, error: error.message };
+
+  // Log each column that actually changed. Category is always SUPPLIER_DELAY
+  // here — it's the supplier's own portal write.
+  if ((oldEtd ?? "") !== (etdValue ?? "")) {
+    await admin.from("po_eta_changes").insert({
+      po_id: poId,
+      column_name: "etd",
+      old_value: oldEtd,
+      new_value: etdValue,
+      category: "SUPPLIER_DELAY",
+      reason: reasonTrimmed,
+      changed_by: me.id,
+    });
+  }
+  if ((oldSupplierEta ?? "") !== (supplierEtaValue ?? "")) {
+    await admin.from("po_eta_changes").insert({
+      po_id: poId,
+      column_name: "supplier_eta",
+      old_value: oldSupplierEta,
+      new_value: supplierEtaValue,
+      category: "SUPPLIER_DELAY",
+      reason: reasonTrimmed,
+      changed_by: me.id,
+    });
+  }
 
   revalidatePath("/supplier");
   revalidatePath(`/purchase-orders/${poId}`);

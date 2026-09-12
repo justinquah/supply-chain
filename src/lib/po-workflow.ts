@@ -176,6 +176,54 @@ export function expectedEta(po: EtaSource): string | null {
   return po.actual_eta ?? po.logistics_eta ?? po.supplier_eta ?? po.targeted_eta ?? null;
 }
 
+// -----------------------------------------------------------------------------
+// ETA change audit (migration 0047 — po_eta_changes)
+// -----------------------------------------------------------------------------
+// Every write to a PO ETA column logs a row into po_eta_changes. When the new
+// date is LATER than the current one (i.e. a slip), the writer must supply a
+// category + reason — that's the "delay caused by which party" record the SCM
+// needs. Advancing an ETA or setting it for the first time doesn't require a
+// reason (though the actor may still supply one).
+export const ETA_CATEGORIES = [
+  "SUPPLIER_DELAY",
+  "LOGISTICS_DELAY",
+  "CUSTOMS_DELAY",
+  "EXPEDITE",
+  "CUSTOMER_REQUEST",
+  "OTHER",
+] as const;
+
+export type EtaCategory = (typeof ETA_CATEGORIES)[number];
+
+export const ETA_CATEGORY_LABELS: Record<EtaCategory, string> = {
+  SUPPLIER_DELAY: "Supplier delay",
+  LOGISTICS_DELAY: "Logistics delay",
+  CUSTOMS_DELAY: "Customs / clearance delay",
+  EXPEDITE: "Pulled in (expedite)",
+  CUSTOMER_REQUEST: "Customer request",
+  OTHER: "Other",
+};
+
+export function isEtaCategory(v: unknown): v is EtaCategory {
+  return typeof v === "string" && (ETA_CATEGORIES as readonly string[]).includes(v);
+}
+
+// Every ETA column tracked by po_eta_changes.
+export type EtaColumn =
+  | "etd"
+  | "targeted_eta"
+  | "supplier_eta"
+  | "logistics_eta"
+  | "actual_eta"
+  | "eta_to_warehouse";
+
+// A slip is when both values are set AND new_value is strictly later than old.
+// String comparison works because parseDateInput enforces 'YYYY-MM-DD'.
+export function isEtaSlip(oldValue: string | null | undefined, newValue: string | null | undefined): boolean {
+  if (!oldValue || !newValue) return false;
+  return newValue > oldValue;
+}
+
 // NOTE: the old parsePaymentTermDays() / recomputeBalanceDue() helpers were
 // removed. Payment due dates are no longer derived in app code — they are
 // DERIVED COLUMNS owned by the DB trigger trg_po_payment_terms, computed from
