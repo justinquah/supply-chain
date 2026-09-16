@@ -172,21 +172,43 @@ export default async function SalesTrendPage({
             units
           </p>
         </div>
-        <div className="flex items-center gap-1 bg-gray-100 rounded-md p-1">
-          {(["total", "online", "offline"] as Channel[]).map((c) => (
-            <Link
-              key={c}
-              href={`/sales/trend?c=${c}`}
-              className={cn(
-                "px-3 py-1 rounded text-sm font-medium transition-colors",
-                channel === c
-                  ? "bg-white text-brand shadow-sm"
-                  : "text-gray-600 hover:text-gray-900"
-              )}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 bg-gray-100 rounded-md p-1">
+            {(["total", "online", "offline"] as Channel[]).map((c) => (
+              <Link
+                key={c}
+                href={`/sales/trend?c=${c}`}
+                className={cn(
+                  "px-3 py-1 rounded text-sm font-medium transition-colors",
+                  channel === c
+                    ? "bg-white text-brand shadow-sm"
+                    : "text-gray-600 hover:text-gray-900"
+                )}
+              >
+                {CHANNEL_LABELS[c]}
+              </Link>
+            ))}
+          </div>
+          {/* Excel export — reuses the same aggregation and respects the
+              channel filter. Route: /sales/trend/export?c=<channel>. */}
+          <a
+            href={`/sales/trend/export?c=${channel}`}
+            className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            title="Download the full trend data (all months, all products, all ranges) as an Excel file"
+          >
+            <svg
+              className="h-4 w-4 text-emerald-700"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
             >
-              {CHANNEL_LABELS[c]}
-            </Link>
-          ))}
+              <path d="M4 4h12l4 4v12H4z" />
+              <path d="M16 4v4h4" />
+              <path d="M9 13l3 3 3-3M12 9v7" />
+            </svg>
+            Export Excel
+          </a>
         </div>
       </div>
 
