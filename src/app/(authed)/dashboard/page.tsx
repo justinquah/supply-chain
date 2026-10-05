@@ -1,10 +1,15 @@
 import { redirect } from "next/navigation";
 import { createClient, getCurrentUser } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { GroupedInventory, type ProductRow, type IncomingBuckets } from "@/components/grouped-inventory";
+import { GroupedInventory } from "@/components/grouped-inventory";
 import { WeekSelector } from "@/components/week-selector";
-
-const IDEAL = 1.5;
+import {
+  IDEAL_COVERAGE as IDEAL,
+  OVER_COVERAGE as OVER,
+  MONTHS,
+  loadDashboardData,
+  loadWeekTurnovers,
+} from "@/lib/dashboard-data";
 
 function rm(v: number) {
   return "RM " + Math.round(v).toLocaleString("en-MY");
@@ -15,8 +20,6 @@ function num(v: number, dp = 0) {
     maximumFractionDigits: dp,
   });
 }
-const MONTHS = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
 export default async function DashboardPage({
   searchParams,
 }: {
@@ -34,147 +37,25 @@ export default async function DashboardPage({
   const supabase = await createClient();
   const sp = await searchParams;
 
-  // Available stock-upload weeks (distinct snapshot dates, KL tz) — the dashboard's time axis.
-  const { data: weekRows } = await supabase
-    .from("stock_upload_weeks")
-    .select("snapshot_date");
-  const snapWeeks = (weekRows ?? []).map((r) => r.snapshot_date as string);
-  const latestSnapWeek = snapWeeks[snapWeeks.length - 1] ?? null;
-  const selWeek =
-    sp.w && snapWeeks.includes(sp.w) ? sp.w : latestSnapWeek;
-  const isLatest = selWeek === latestSnapWeek;
-  // AMS window = the calendar month of the selected stock week.
-  const selDate = selWeek ? new Date(selWeek + "T00:00:00Z") : new Date();
-  const selYear = selDate.getUTCFullYear();
-  const selMonth = selDate.getUTCMonth() + 1;
-  // AMS window = the 3 completed months BEFORE the stock month; label shows the window's end.
-  const amsEndMonth = selMonth === 1 ? 12 : selMonth - 1;
-  const amsEndYear = selMonth === 1 ? selYear - 1 : selYear;
-
-  // Today in Asia/Kuala_Lumpur for bucketing
-  const nowKL = new Date(
-    new Date().toLocaleString("en-US", { timeZone: "Asia/Kuala_Lumpur" })
-  );
-  const curYear = nowKL.getFullYear();
-  const curMonth = nowKL.getMonth() + 1; // 1-based
-
-  // Previous completed calendar month
-  const prevMonth = curMonth === 1 ? 12 : curMonth - 1;
-  const prevYear = curMonth === 1 ? curYear - 1 : curYear;
-
-  // Labels for the 3 incoming-arrival buckets: current month, +1, +2 (KL), with a
-  // year suffix when the bucket rolls into a different year.
-  const incMonthLabels = [
-    ...[0, 1, 2].map((off) => {
-      const base = curMonth - 1 + off;
-      const y = curYear + Math.floor(base / 12);
-      const m = (base % 12) + 1;
-      return MONTHS[m] + (y !== curYear ? ` '${String(y).slice(2)}` : "");
-    }),
-    "Later",
-  ] as [string, string, string, string];
-
-  // Use the as-of function so AMS reflects the 3 months ending at the selected month
-  const [
-    { data: rows },
-    { data: incomingRows },
-    { data: lastMonthRows },
-  ] = await Promise.all([
-    selWeek
-      ? supabase.rpc("product_dashboard_asof_date", { p_date: selWeek })
-      : Promise.resolve({ data: [] as any[] }),
-    // Incoming stock bucketed (status=EXPECTED only)
-    supabase
-      .from("incoming_stock")
-      .select("product_id, quantity, expected_date")
-      .eq("status", "EXPECTED"),
-    // Last completed calendar month sales
-    supabase
-      .from("monthly_sales")
-      .select("main_product_id, units_equivalent")
-      .eq("year", prevYear)
-      .eq("month", prevMonth),
-  ]);
-
-  const products = ((rows ?? []) as any[])
-    .filter((p) => p.is_main && p.is_active)
-    .sort((a, b) => Number(b.ams_total) - Number(a.ams_total)) as ProductRow[] & any[];
-
-  // Build incoming buckets map: product_id → { thisMonth, nextMonth, following }
-  const incomingMap: Record<string, IncomingBuckets> = {};
-  for (const row of incomingRows ?? []) {
-    const d = new Date(row.expected_date);
-    const yr = d.getUTCFullYear();
-    const mo = d.getUTCMonth() + 1; // 1-based
-
-    // Determine bucket
-    let bucket: keyof IncomingBuckets;
-    const monthsAhead =
-      (yr - curYear) * 12 + (mo - curMonth);
-    if (monthsAhead <= 0) {
-      // past or current month
-      bucket = "thisMonth";
-    } else if (monthsAhead === 1) {
-      bucket = "nextMonth";
-    } else if (monthsAhead === 2) {
-      bucket = "following";
-    } else {
-      // Everything further out. Previously this fell into "following", which made
-      // the third column read as a single month while actually holding every
-      // future arrival (Oct, Nov, Dec, Jan…) — hugely overstating that month.
-      bucket = "later";
-    }
-
-    const pid = row.product_id;
-    if (!incomingMap[pid]) {
-      incomingMap[pid] = { thisMonth: 0, nextMonth: 0, following: 0, later: 0 };
-    }
-    incomingMap[pid][bucket] += Number(row.quantity || 0);
-  }
-
-  // Build last-month sales map: product_id → total units_equivalent
-  const lastMonthSalesMap: Record<string, number> = {};
-  for (const row of lastMonthRows ?? []) {
-    if (!row.main_product_id) continue;
-    lastMonthSalesMap[row.main_product_id] =
-      (lastMonthSalesMap[row.main_product_id] ?? 0) + Number(row.units_equivalent || 0);
-  }
-
-  // The selected stock-upload week, for display (format the date string directly, no TZ shift).
-  const stockAsOf: string | null = selWeek
-    ? (() => {
-        const [y, m, d] = selWeek.split("-").map(Number);
-        return `${d} ${MONTHS[m]} ${y}`;
-      })()
-    : null;
-
-  // KPIs
-  const inventoryValue = products.reduce(
-    (s, p) => s + Number(p.inventory_value_myr || 0),
-    0
-  );
-  // Value-weighted inventory turnover (coverage weighted by monthly sales value).
-  let wNum = 0,
-    wDen = 0;
-  for (const p of products) {
-    const cov = p.coverage_months;
-    const w = Number(p.monthly_sales_value_myr || 0);
-    if (cov != null && w > 0) {
-      wNum += Number(cov) * w;
-      wDen += w;
-    }
-  }
-  const weightedTurnover = wDen > 0 ? wNum / wDen : null;
-
-  const totalStock = products.reduce((s, p) => s + Number(p.current_stock || 0), 0);
-  const totalAms = products.reduce((s, p) => s + Number(p.ams_total || 0), 0);
-  // Overall coverage (value-free) = total stock units / total AMS — the "turnover"
-  // figure STAFF can see in place of the value-weighted turnover.
-  const overallCoverage = totalAms > 0 ? totalStock / totalAms : null;
-
-
-  // Overstock threshold (months) — used by the weighted-turnover status/chart.
-  const OVER = IDEAL * 2; // 3.0 mo = clearly overstocked
+  const {
+    snapWeeks,
+    selWeek,
+    isLatest,
+    stockAsOf,
+    amsEndMonth,
+    amsEndYear,
+    prevMonth,
+    prevYear,
+    incMonthLabels,
+    products,
+    incomingMap,
+    lastMonthSalesMap,
+    inventoryValue,
+    weightedTurnover,
+    totalStock,
+    totalAms,
+    overallCoverage,
+  } = await loadDashboardData(supabase, sp.w);
 
   // Weighted-turnover status (target IDEAL): red when clearly over/under.
   const turnoverOver = weightedTurnover != null && weightedTurnover > OVER;
@@ -187,23 +68,7 @@ export default async function DashboardPage({
     : `target ${IDEAL} mo · on track`;
 
   // Weighted turnover per stock week, to show the trend toward target.
-  const weekTurnovers = await Promise.all(
-    snapWeeks.map(async (w) => {
-      const { data } = await supabase.rpc("product_dashboard_asof_date", { p_date: w });
-      const ps = ((data ?? []) as any[]).filter((p) => p.is_main && p.is_active);
-      let n = 0,
-        dn = 0;
-      for (const p of ps) {
-        const c = p.coverage_months;
-        const sv = Number(p.monthly_sales_value_myr || 0);
-        if (c != null && sv > 0) {
-          n += Number(c) * sv;
-          dn += sv;
-        }
-      }
-      return { week: w, turnover: dn > 0 ? n / dn : null };
-    })
-  );
+  const weekTurnovers = await loadWeekTurnovers(supabase, snapWeeks);
 
   return (
     <div className="space-y-6">
@@ -221,9 +86,31 @@ export default async function DashboardPage({
             )}
           </p>
         </div>
-        {snapWeeks.length > 0 && selWeek && (
-          <WeekSelector weeks={snapWeeks} selected={selWeek} />
-        )}
+        <div className="flex items-center gap-2">
+          {snapWeeks.length > 0 && selWeek && (
+            <WeekSelector weeks={snapWeeks} selected={selWeek} />
+          )}
+          {selWeek && (
+            <a
+              href={`/dashboard/export?w=${selWeek}`}
+              className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              title="Download this week's dashboard (turnover by week + inventory by range) as Excel"
+            >
+              <svg
+                className="h-4 w-4 text-emerald-700"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path d="M4 4h12l4 4v12H4z" />
+                <path d="M16 4v4h4" />
+                <path d="M9 13l3 3 3-3M12 9v7" />
+              </svg>
+              Export Excel
+            </a>
+          )}
+        </div>
       </div>
 
       {/* KPI cards */}
