@@ -41,9 +41,11 @@ function buildConnectionString() {
         '  SUPABASE_DB_PASSWORD="your-db-password-here"'
     );
   }
-  // Direct connection (port 5432) — required for DDL
+  // Session-mode pooler (port 5432) — supports DDL. The direct db.<ref> host is
+  // IPv6-only, which networks without IPv6 can't resolve.
+  const host = process.env.SUPABASE_POOLER_HOST || "aws-1-ap-northeast-1.pooler.supabase.com";
   const encoded = encodeURIComponent(password);
-  return `postgresql://postgres:${encoded}@db.${ref}.supabase.co:5432/postgres`;
+  return `postgresql://postgres.${ref}:${encoded}@${host}:5432/postgres`;
 }
 
 // --- main -----------------------------------------------------------------

@@ -3,6 +3,7 @@ import { ActionList } from "@/components/action-list";
 import { PoReorderInsights } from "@/components/po-reorder-insights";
 import { DemandUplift, type DemandUpliftRow } from "./demand-uplift";
 import type { ProductRow } from "@/components/grouped-inventory";
+import { classifyReorder, reorderStatusCounts } from "@/lib/reorder-insights";
 
 const IDEAL = 1.5;
 const OVER = IDEAL * 2; // 3.0 mo = clearly overstocked
@@ -65,7 +66,7 @@ export default async function InsightsPage() {
     supabase
       .from("products")
       .select(
-        "id, units_per_shipment, name, product_family, variation, is_main, is_active"
+        "id, units_per_shipment, name, product_family, variation, is_main, is_active, discontinue_planned, discontinue_note"
       ),
     supabase
       .from("po_timing_actions")
@@ -75,6 +76,8 @@ export default async function InsightsPage() {
   ]);
 
   const unitsPerShipmentById = new Map<string, number | null>();
+  // Products the SCM has marked to discontinue (phase-out) + their remark.
+  const discontinueById = new Map<string, string | null>();
   // Product metadata for the demand-uplift card (active MAIN products only).
   const prodMeta = new Map<
     string,
@@ -83,6 +86,9 @@ export default async function InsightsPage() {
   for (const r of shipmentRows ?? []) {
     const v = (r as any).units_per_shipment;
     unitsPerShipmentById.set(String((r as any).id), v != null ? Number(v) : null);
+    if ((r as any).discontinue_planned) {
+      discontinueById.set(String((r as any).id), (r as any).discontinue_note ?? null);
+    }
     prodMeta.set(String((r as any).id), {
       name: String((r as any).name ?? ""),
       family: (r as any).product_family ?? null,
@@ -187,7 +193,16 @@ export default async function InsightsPage() {
     ams: Number(p.ams_total || 0),
     coverage: p.coverage_months != null ? Number(p.coverage_months) : null,
     unitsPerShipment: unitsPerShipmentById.get(String(p.id)) ?? null,
+    discontinuePlanned: discontinueById.has(String(p.id)),
+    discontinueNote: discontinueById.get(String(p.id)) ?? null,
   }));
+  // Same classification the PO timing cards render — counted here for the
+  // "pending SCM actions" summary.
+  const reorderCounts = reorderStatusCounts(
+    classifyReorder(reorderProducts, incomingLines, todayISO),
+    resolvedExpedite,
+    resolvedDelay
+  );
 
   // ---- Demand uplift: last completed KL month vs the 3 months before it ----
   // The stock plan runs on trailing 3-month averages (AMS), so a real demand
@@ -297,9 +312,90 @@ export default async function InsightsPage() {
   }
   upliftRows.sort((a, b) => b.extraUnits - a.extraUnits);
 
+  // ---- Pending SCM actions: one entry per task type, pending vs done ----
+  const upliftPending = upliftRows.filter((r) => r.resolution == null).length;
+  const taskSummary: { label: string; href: string; pending: number; doneLabel: string | null }[] = [
+    {
+      label: "Demand uplift — record verdict",
+      href: "#demand-uplift",
+      pending: upliftPending,
+      doneLabel: upliftRows.length - upliftPending ? `${upliftRows.length - upliftPending} done` : null,
+    },
+    {
+      label: "Expedite PO",
+      href: "#po-timing",
+      pending: reorderCounts.expedite.pending,
+      doneLabel: reorderCounts.expedite.done ? `${reorderCounts.expedite.done} done` : null,
+    },
+    {
+      label: "Issue new PO / discontinue",
+      href: "#po-timing",
+      pending: reorderCounts.newPo.pending,
+      doneLabel: reorderCounts.newPo.discontinuing
+        ? `${reorderCounts.newPo.discontinuing} discontinuing`
+        : null,
+    },
+    {
+      label: "Delay PO",
+      href: "#po-timing",
+      pending: reorderCounts.delay.pending,
+      doneLabel: reorderCounts.delay.done ? `${reorderCounts.delay.done} done` : null,
+    },
+  ];
+  const totalPending = taskSummary.reduce((s, t) => s + t.pending, 0);
+
   return (
     <div className="space-y-6">
       <Header />
+
+      {/* Pending SCM actions — what still needs a remark or a fix */}
+      <div
+        className={
+          "rounded-lg border p-3 " +
+          (totalPending > 0 ? "border-amber-200 bg-amber-50/60" : "border-emerald-200 bg-emerald-50/60")
+        }
+      >
+        <div className="flex items-baseline justify-between gap-2 flex-wrap">
+          <div className="text-sm font-semibold text-gray-800">
+            {totalPending > 0
+              ? `${totalPending} action${totalPending === 1 ? "" : "s"} pending for SCM`
+              : "All caught up — no pending actions"}
+          </div>
+          <div className="text-[11px] text-gray-500">
+            Pending = still needs a remark or fix from SCM · click a box to jump to it
+          </div>
+        </div>
+        <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+          {taskSummary.map((t) => (
+            <a
+              key={t.label}
+              href={t.href}
+              className="rounded-md border border-gray-200 bg-white px-2.5 py-2 hover:border-brand/40 transition-colors"
+            >
+              <div className="text-[11px] text-gray-500">{t.label}</div>
+              <div className="mt-0.5 flex items-center gap-2">
+                <span
+                  className={
+                    "text-lg font-semibold tabular-nums " +
+                    (t.pending > 0 ? "text-amber-700" : "text-emerald-700")
+                  }
+                >
+                  {t.pending}
+                </span>
+                <span
+                  className={
+                    "text-[10px] font-medium px-1.5 py-0.5 rounded-full " +
+                    (t.pending > 0 ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700")
+                  }
+                >
+                  {t.pending > 0 ? "Pending" : "Done"}
+                </span>
+                {t.doneLabel && <span className="text-[11px] text-gray-400">{t.doneLabel}</span>}
+              </div>
+            </a>
+          ))}
+        </div>
+      </div>
 
       {/* Action lists: replenish (below target) vs push sales (overstock) */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -309,7 +405,9 @@ export default async function InsightsPage() {
           hint="running low · order / expedite"
           rows={understock.map((p) => ({
             sku: p.sku,
-            right: `${num(Number(p.coverage_months), 1)} mo · ${num(Number(p.current_stock))} u`,
+            right:
+              `${num(Number(p.coverage_months), 1)} mo · ${num(Number(p.current_stock))} u` +
+              (discontinueById.has(String(p.id)) ? " · to discontinue" : ""),
           }))}
           empty="Nothing below target."
         />
@@ -327,15 +425,17 @@ export default async function InsightsPage() {
 
       {/* Demand uplift — spike vs the trailing 3-month average, per channel.
           Only SCM/ADMIN may record verdicts (same gate as canEmailSupplier). */}
-      <DemandUplift
-        rows={upliftRows}
-        period={periodISO}
-        monthLabel={monthLabel}
-        canAct={canEmailSupplier}
-      />
+      <div id="demand-uplift" className="scroll-mt-20">
+        <DemandUplift
+          rows={upliftRows}
+          period={periodISO}
+          monthLabel={monthLabel}
+          canAct={canEmailSupplier}
+        />
+      </div>
 
       {/* PO timing & reorder — expedite / delay / new PO */}
-      <div className="space-y-2">
+      <div id="po-timing" className="space-y-2 scroll-mt-20">
         <h2 className="text-sm font-semibold text-gray-700">
           PO timing &amp; reorder
           <span className="ml-2 text-xs font-normal text-gray-400">
@@ -349,6 +449,7 @@ export default async function InsightsPage() {
           resolvedDelay={[...resolvedDelay]}
           resolvedExpedite={[...resolvedExpedite]}
           poSuppliers={poSuppliers}
+          canAct={canEmailSupplier}
         />
       </div>
     </div>

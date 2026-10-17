@@ -62,6 +62,42 @@ export async function resolveDemandSignal(
   return { ok: true };
 }
 
+// Mark (or unmark) a low-stock product as being phased out, with an optional
+// remark. Clears it from the pending "Issue new PO" queue without deactivating
+// the product — it keeps selling down its remaining stock.
+export async function setDiscontinuePlan(input: {
+  productId: string;
+  planned: boolean;
+  note?: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const profile = await requireRole("SCM", "ADMIN");
+  if (!input.productId) return { ok: false, error: "Missing product" };
+
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("products")
+    .update(
+      input.planned
+        ? {
+            discontinue_planned: true,
+            discontinue_note: input.note?.trim() || null,
+            discontinue_marked_at: new Date().toISOString(),
+            discontinue_marked_by: profile.id,
+          }
+        : {
+            discontinue_planned: false,
+            discontinue_note: null,
+            discontinue_marked_at: null,
+            discontinue_marked_by: null,
+          }
+    )
+    .eq("id", input.productId);
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/insights");
+  return { ok: true };
+}
+
 export async function undoDemandSignal(
   productId: string,
   period: string,

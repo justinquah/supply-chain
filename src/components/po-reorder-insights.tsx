@@ -9,13 +9,26 @@
 // Expedite & Delay are grouped by PO (the action is on the PO). The SCM accepts
 // the proposed ETA or overrides it, then Applies → applyPoTiming writes it to the
 // PO + its in-transit lines and records a resolved po_timing_actions row, so the
-// task moves to "Recently resolved". New-PO is per product (no PO exists yet).
+// task moves to "Recently resolved". New-PO is per product (no PO exists yet);
+// the SCM either raises a PO (the row then drops off) or marks the product to
+// discontinue with a remark. Classification lives in lib/reorder-insights so
+// the page's pending counts use the same rules.
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { applyPoTiming } from "@/app/(authed)/purchase-orders/actions";
+import { setDiscontinuePlan } from "@/app/(authed)/insights/actions";
 import { EmailSupplierButton } from "@/app/(authed)/purchase-orders/email-supplier-button";
 import { poTimingEmail } from "@/lib/supplier-email";
+import {
+  REORDER_IDEAL as IDEAL,
+  REORDER_OVER as OVER,
+  classifyReorder,
+  type IncLine,
+  type NewPoRow,
+  type PoGroup,
+  type ReorderProduct,
+} from "@/lib/reorder-insights";
 
 /** Supplier mailing lists for one PO (empty when the viewer may not email). */
 export type PoSupplier = { name: string | null; to: string[]; cc: string[] };
@@ -34,22 +47,6 @@ type AppliedTiming = {
   actionType: "delay" | "expedite";
 };
 
-const IDEAL = 1.5; // target months of cover
-const OVER = 3; // overstock threshold (months)
-
-export type ReorderProduct = {
-  id: string;
-  sku: string;
-  stock: number;
-  ams: number; // monthly
-  coverage: number | null; // months
-  unitsPerShipment?: number | null; // one shipment's loading size (main units)
-};
-export type IncLine = { qty: number; eta: string | null; po: string | null; poId: string | null };
-
-function fmt(n: number) {
-  return Math.round(n).toLocaleString("en-MY");
-}
 function cov1(c: number | null) {
   return c == null ? "—" : c.toFixed(1) + " mo";
 }
@@ -66,19 +63,20 @@ function addDays(iso: string, n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-type Item = { sku: string; cov: number | null; note: string };
-type PoGroup = {
-  poId: string | null;
-  po: string;
-  eta: string | null;
-  overdue: boolean;
-  status: string;
-  items: Item[];
-  sort: number;
-  minCov: number | null;
-  maxCov: number | null;
-};
-type FlatRow = { sku: string; cov: number | null; note: string; sort: number };
+// Small status tag shown on every action row.
+function StatusPill({ status }: { status: "pending" | "done" | "discontinuing" }) {
+  const map = {
+    pending: "bg-amber-100 text-amber-700",
+    done: "bg-emerald-100 text-emerald-700",
+    discontinuing: "bg-gray-200 text-gray-600",
+  } as const;
+  const label = { pending: "Pending", done: "Done", discontinuing: "Discontinuing" }[status];
+  return (
+    <span className={"text-[10px] font-medium px-1.5 py-0.5 rounded-full shrink-0 " + map[status]}>
+      {label}
+    </span>
+  );
+}
 
 // Proposed ETA for a PO group, from its worst product coverage + current ETA.
 function proposedEta(g: PoGroup, actionType: "delay" | "expedite", todayISO: string): string {
@@ -104,6 +102,7 @@ export function PoReorderInsights({
   resolvedDelay,
   resolvedExpedite,
   poSuppliers = {},
+  canAct = false,
 }: {
   products: ReorderProduct[];
   incoming: Record<string, IncLine[]>;
@@ -112,115 +111,28 @@ export function PoReorderInsights({
   resolvedExpedite: string[];
   /** poId -> supplier mailing lists. Empty for roles that cannot email. */
   poSuppliers?: Record<string, PoSupplier>;
+  /** SCM/ADMIN — may mark products to discontinue. */
+  canAct?: boolean;
 }) {
   // Timing actions applied in this session -> the follow-up supplier email.
   const [applied, setApplied] = useState<Record<string, AppliedTiming>>({});
   const markApplied = (a: AppliedTiming) =>
     setApplied((prev) => ({ ...prev, [a.poId]: a }));
 
-  const today = new Date(todayISO + "T00:00:00Z").getTime();
-  const daysTo = (eta: string | null) =>
-    eta ? Math.round((new Date(eta + "T00:00:00Z").getTime() - today) / 86400000) : null;
-
-  const expediteBy = new Map<string, PoGroup>();
-  const delayBy = new Map<string, PoGroup>();
-  const newPo: FlatRow[] = [];
-
-  const addTo = (
-    map: Map<string, PoGroup>,
-    poId: string | null,
-    po: string | null,
-    eta: string | null,
-    overdue: boolean,
-    status: string,
-    groupSort: number,
-    cov: number | null,
-    item: Item
-  ) => {
-    const key = poId ?? po ?? "(no PO#)";
-    let g = map.get(key);
-    if (!g) {
-      g = { poId, po: po ?? "(no PO#)", eta, overdue, status, items: [], sort: groupSort, minCov: cov, maxCov: cov };
-      map.set(key, g);
-    }
-    // keep the earliest ETA / worst sort for the group
-    if ((eta ?? "9999") < (g.eta ?? "9999")) g.eta = eta;
-    if (overdue) g.overdue = true;
-    if (groupSort < g.sort) {
-      g.sort = groupSort;
-      g.status = status;
-    }
-    if (cov != null) {
-      g.minCov = g.minCov == null ? cov : Math.min(g.minCov, cov);
-      g.maxCov = g.maxCov == null ? cov : Math.max(g.maxCov, cov);
-    }
-    g.items.push(item);
-  };
-
-  for (const p of products) {
-    if (!(p.ams > 0)) continue;
-    const cov = p.coverage != null ? Number(p.coverage) : p.stock / p.ams;
-    const inc = incoming[p.id] ?? [];
-
-    if (inc.length === 0) {
-      if (cov != null && cov < IDEAL) {
-        const need = Math.max(0, 2 * p.ams - p.stock);
-        const ups = p.unitsPerShipment;
-        let note: string;
-        if (ups != null && ups > 0) {
-          const shipments = Math.max(1, Math.ceil(need / ups));
-          const suggestQty = shipments * ups;
-          note = `order ≈ ${shipments} shipment${shipments === 1 ? "" : "s"} = ${fmt(suggestQty)} u`;
-        } else {
-          note = `order ~${fmt(need)} u (to ~2 mo) · set loading size in Products`;
-        }
-        newPo.push({ sku: p.sku, cov, note, sort: cov });
-      }
-      continue;
-    }
-
-    let earliest: IncLine | null = null;
-    for (const l of inc) if (!earliest || (l.eta ?? "9999") < (earliest.eta ?? "9999")) earliest = l;
-    const eta = earliest?.eta ?? null;
-    const po = earliest?.po ?? null;
-    const poId = earliest?.poId ?? null;
-    const d = daysTo(eta);
-    const runway = (cov ?? 0) * 30;
-
-    if (cov != null && cov > OVER) {
-      addTo(delayBy, poId, po, eta, false, "overstocked · consider delaying", -cov, cov, {
-        sku: p.sku,
-        cov,
-        note: cov1(cov) + " cover",
-      });
-    } else if (d == null || d <= 0 || runway < d) {
-      const overdue = d != null && d <= 0;
-      const gap = d != null ? Math.round(d - runway) : null;
-      addTo(
-        expediteBy,
-        poId,
-        po,
-        eta,
-        overdue,
-        overdue ? "overdue — follow up" : "runs out before ETA",
-        overdue ? -1e9 : gap ?? 0,
-        cov,
-        { sku: p.sku, cov, note: overdue ? "overdue" : gap != null ? `~${gap}d short` : "late" }
-      );
-    }
-  }
-
-  const expedite = [...expediteBy.values()].sort((a, b) => a.sort - b.sort);
-  const delay = [...delayBy.values()].sort((a, b) => a.sort - b.sort);
-  newPo.sort((a, b) => a.sort - b.sort);
+  const { expedite, delay, newPo } = classifyReorder(products, incoming, todayISO);
 
   const resolvedDelaySet = new Set(resolvedDelay);
   const resolvedExpediteSet = new Set(resolvedExpedite);
+  const doneIn = (groups: PoGroup[], set: Set<string>) =>
+    groups.filter((g) => g.poId && set.has(g.poId)).length;
+  const expediteDone = doneIn(expedite, resolvedExpediteSet);
+  const delayDone = doneIn(delay, resolvedDelaySet);
+  const newPoDisc = newPo.filter((r) => r.discontinuePlanned).length;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
       <PoGroupCard
-        title={`Expedite — pull forward (${expedite.length})`}
+        title={`Expedite — pull forward (${expedite.length - expediteDone} pending${expediteDone ? ` · ${expediteDone} done` : ""})`}
         tone="bad"
         hint="a variation stocks out before the PO arrives"
         groups={expedite}
@@ -232,15 +144,16 @@ export function PoReorderInsights({
         onApplied={markApplied}
         empty="No PO needs expediting."
       />
-      <FlatCard
-        title={`Issue new PO (${newPo.length})`}
+      <NewPoCard
+        title={`Issue new PO (${newPo.length - newPoDisc} pending${newPoDisc ? ` · ${newPoDisc} discontinuing` : ""})`}
         tone="bad"
-        hint="low cover · nothing incoming"
+        hint="low cover · nothing incoming — raise a PO or mark to discontinue"
         rows={newPo}
+        canAct={canAct}
         empty="Nothing needs a new PO."
       />
       <PoGroupCard
-        title={`Delay — push back (${delay.length})`}
+        title={`Delay — push back (${delay.length - delayDone} pending${delayDone ? ` · ${delayDone} done` : ""})`}
         tone="warn"
         hint="overstocked · more on the way"
         groups={delay}
@@ -387,7 +300,10 @@ function PoGroupCard({
                     <span className="font-mono truncate">
                       <span className="text-emerald-500">✓</span> {g.po}
                     </span>
-                    <span className="shrink-0">ETA {fmtEta(g.eta)}</span>
+                    <span className="flex items-center gap-1.5 shrink-0">
+                      ETA {fmtEta(g.eta)}
+                      <StatusPill status="done" />
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -455,7 +371,10 @@ function ActivePoGroup({
   return (
     <li className="rounded-md bg-gray-50 p-2">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium text-gray-800 font-mono">{group.po}</span>
+        <span className="flex items-center gap-1.5 min-w-0">
+          <span className="text-sm font-medium text-gray-800 font-mono truncate">{group.po}</span>
+          <StatusPill status={done ? "done" : "pending"} />
+        </span>
         <span className={"text-[11px] font-medium " + (group.overdue ? "text-red-600" : "text-gray-500")}>
           {fmtEta(group.eta)} · {group.status}
         </span>
@@ -506,36 +425,169 @@ function ActivePoGroup({
   );
 }
 
-function FlatCard({
+function NewPoCard({
   title,
   tone,
   hint,
   rows,
+  canAct,
   empty,
 }: {
   title: string;
   tone: "bad" | "warn";
   hint: string;
-  rows: FlatRow[];
+  rows: NewPoRow[];
+  canAct: boolean;
   empty: string;
 }) {
+  const pending = rows.filter((r) => !r.discontinuePlanned);
+  const discontinuing = rows.filter((r) => r.discontinuePlanned);
   return (
     <Shell title={title} tone={tone} hint={hint}>
       {rows.length === 0 ? (
         <p className="text-xs text-gray-400 py-1">{empty}</p>
       ) : (
-        <ul className="divide-y divide-gray-100 max-h-80 overflow-y-auto">
-          {rows.map((r, i) => (
-            <li key={r.sku + i} className="py-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs text-gray-700 font-mono truncate">{r.sku}</span>
-                <span className="text-xs text-gray-500 shrink-0">{cov1(r.cov)}</span>
+        <>
+          <ul className="divide-y divide-gray-100 max-h-80 overflow-y-auto">
+            {pending.map((r) => (
+              <PendingNewPoRow key={r.productId} row={r} canAct={canAct} />
+            ))}
+          </ul>
+          {discontinuing.length > 0 && (
+            <div className={pending.length > 0 ? "mt-3 border-t border-gray-100 pt-2" : ""}>
+              <div className="text-[11px] font-medium text-gray-400 mb-1">
+                Marked to discontinue ({discontinuing.length})
               </div>
-              <div className="text-[11px] text-gray-400 mt-0.5">{r.note}</div>
-            </li>
-          ))}
-        </ul>
+              <ul className="space-y-1">
+                {discontinuing.map((r) => (
+                  <DiscontinuingRow key={r.productId} row={r} canAct={canAct} />
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
       )}
     </Shell>
+  );
+}
+
+// A product that needs a PO. SCM/ADMIN can instead mark it to discontinue,
+// with an optional remark (e.g. "phasing out, replaced by new 6L range").
+function PendingNewPoRow({ row, canAct }: { row: NewPoRow; canAct: boolean }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const [isPending, startTransition] = useTransition();
+  const [err, setErr] = useState<string | null>(null);
+
+  function save() {
+    setErr(null);
+    startTransition(async () => {
+      const res = await setDiscontinuePlan({ productId: row.productId, planned: true, note });
+      if (res.ok) {
+        setOpen(false);
+        router.refresh();
+      } else {
+        setErr(res.error ?? "Failed to save");
+      }
+    });
+  }
+
+  return (
+    <li className="py-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-1.5 min-w-0">
+          <span className="text-xs text-gray-700 font-mono truncate">{row.sku}</span>
+          <StatusPill status="pending" />
+        </span>
+        <span className="text-xs text-gray-500 shrink-0">{cov1(row.cov)}</span>
+      </div>
+      <div className="flex items-center justify-between gap-2 mt-0.5">
+        <span className="text-[11px] text-gray-400">{row.note}</span>
+        {canAct && !open && (
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="text-[11px] text-gray-500 hover:text-brand underline-offset-2 hover:underline shrink-0"
+          >
+            Mark discontinue
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+          <input
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            disabled={isPending}
+            placeholder="Remark (optional) — e.g. phasing out"
+            className="flex-1 min-w-[140px] border border-gray-300 rounded-md px-1.5 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-brand/40 disabled:opacity-50"
+          />
+          <button
+            type="button"
+            onClick={save}
+            disabled={isPending}
+            className="rounded-md bg-gray-800 text-white px-2 py-0.5 text-[11px] font-medium hover:bg-gray-700 disabled:opacity-50"
+          >
+            {isPending ? "Saving…" : "Save"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              setErr(null);
+            }}
+            disabled={isPending}
+            className="text-[11px] text-gray-500 hover:text-gray-800"
+          >
+            Cancel
+          </button>
+          {err && <span className="text-[10px] text-red-600 w-full">{err}</span>}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function DiscontinuingRow({ row, canAct }: { row: NewPoRow; canAct: boolean }) {
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+  const [err, setErr] = useState<string | null>(null);
+
+  function undo() {
+    setErr(null);
+    startTransition(async () => {
+      const res = await setDiscontinuePlan({ productId: row.productId, planned: false });
+      if (res.ok) router.refresh();
+      else setErr(res.error ?? "Failed to undo");
+    });
+  }
+
+  return (
+    <li className="rounded-md bg-gray-50 px-2 py-1 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-1.5 min-w-0">
+          <span className="font-mono text-gray-500 truncate">{row.sku}</span>
+          <StatusPill status="discontinuing" />
+        </span>
+        <span className="flex items-center gap-2 shrink-0 text-gray-400">
+          {cov1(row.cov)}
+          {canAct && (
+            <button
+              type="button"
+              onClick={undo}
+              disabled={isPending}
+              className="text-[11px] text-gray-500 hover:text-gray-800 disabled:opacity-50"
+            >
+              {isPending ? "…" : "Undo"}
+            </button>
+          )}
+        </span>
+      </div>
+      {row.discontinueNote && (
+        <div className="text-[11px] text-gray-500 mt-0.5 italic">“{row.discontinueNote}”</div>
+      )}
+      {err && <div className="text-[10px] text-red-600">{err}</div>}
+    </li>
   );
 }
