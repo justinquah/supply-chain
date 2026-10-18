@@ -4,6 +4,17 @@ import { PoReorderInsights } from "@/components/po-reorder-insights";
 import { DemandUplift, type DemandUpliftRow } from "./demand-uplift";
 import type { ProductRow } from "@/components/grouped-inventory";
 import { classifyReorder, reorderStatusCounts } from "@/lib/reorder-insights";
+import { PushSalesCard, type PushRow } from "./push-sales";
+import {
+  PUSH_ACTION_WINDOW_DAYS,
+  baselineMonths,
+  evaluatePushAction,
+  isPushPending,
+  productPushState,
+  type EvaluatedPushAction,
+  type PushActionRecord,
+  type PushChannel,
+} from "@/lib/sales-push";
 
 const IDEAL = 1.5;
 const OVER = IDEAL * 2; // 3.0 mo = clearly overstocked
@@ -312,6 +323,112 @@ export default async function InsightsPage() {
   }
   upliftRows.sort((a, b) => b.extraUnits - a.extraUnits);
 
+  // ---- Sales-push actions on overstocked products ----
+  // Load the last 180 days of logged actions, the channel sales each one is
+  // judged on (measure month + 3 baseline months), and which months are keyed in.
+  const pushCutoff = new Date(todayISO + "T00:00:00Z");
+  pushCutoff.setUTCDate(pushCutoff.getUTCDate() - 180);
+  const [{ data: pushData }, { data: loadedData }] = await Promise.all([
+    supabase
+      .from("sales_push_actions")
+      .select(
+        "id, product_id, channel, mechanic, details, cost_myr, start_date, end_date, measure_year, measure_month, coverage_at_action"
+      )
+      .gte("start_date", pushCutoff.toISOString().slice(0, 10))
+      .order("start_date", { ascending: false }),
+    supabase.from("sales_months_loaded").select("year, month, channel"),
+  ]);
+  const pushActions: PushActionRecord[] = (pushData ?? []).map((r: any) => ({
+    id: String(r.id),
+    productId: String(r.product_id),
+    channel: r.channel as PushChannel,
+    mechanic: r.mechanic,
+    details: r.details ?? null,
+    costMyr: r.cost_myr != null ? Number(r.cost_myr) : null,
+    startDate: String(r.start_date),
+    endDate: r.end_date ?? null,
+    measureYear: Number(r.measure_year),
+    measureMonth: Number(r.measure_month),
+    coverageAtAction: r.coverage_at_action != null ? Number(r.coverage_at_action) : null,
+  }));
+  const loadedSet = new Set(
+    (loadedData ?? []).map((r: any) => `${r.channel}|${r.year}|${r.month}`)
+  );
+
+  // Channel units per (product, year, month) for every month an action needs.
+  const pushUnits = new Map<string, number>(); // "pid|channel|y|m" -> units
+  const pushProductIds = [...new Set(pushActions.map((a) => a.productId))];
+  if (pushProductIds.length > 0) {
+    const needed = new Set<string>();
+    for (const a of pushActions) {
+      needed.add(`${a.measureYear}|${a.measureMonth}`);
+      for (const b of baselineMonths(a.measureYear, a.measureMonth)) needed.add(`${b.year}|${b.month}`);
+    }
+    const monthOr = [...needed]
+      .map((k) => {
+        const [y, m] = k.split("|");
+        return `and(year.eq.${y},month.eq.${m})`;
+      })
+      .join(",");
+    for (let from = 0; ; from += PAGE) {
+      const { data: batch } = await supabase
+        .from("monthly_sales")
+        .select("main_product_id, year, month, channel, units_equivalent")
+        .in("main_product_id", pushProductIds)
+        .or(monthOr)
+        .order("id", { ascending: true })
+        .range(from, from + PAGE - 1);
+      const rowsBatch = (batch ?? []) as SalesRow[];
+      for (const r of rowsBatch) {
+        if (!r.main_product_id || !r.channel) continue;
+        const k = `${r.main_product_id}|${r.channel}|${r.year}|${r.month}`;
+        pushUnits.set(k, (pushUnits.get(k) ?? 0) + Number(r.units_equivalent || 0));
+      }
+      if (rowsBatch.length < PAGE) break;
+    }
+  }
+  const evaluated: EvaluatedPushAction[] = pushActions.map((a) =>
+    evaluatePushAction(
+      a,
+      (pid, ch, y, m) => pushUnits.get(`${pid}|${ch}|${y}|${m}`) ?? 0,
+      (ch, y, m) => loadedSet.has(`${ch}|${y}|${m}`)
+    )
+  );
+  const actionsByProduct = new Map<string, EvaluatedPushAction[]>();
+  for (const a of evaluated) {
+    const list = actionsByProduct.get(a.productId) ?? [];
+    list.push(a); // already newest-first from the query
+    actionsByProduct.set(a.productId, list);
+  }
+  const toPushRow = (p: any): PushRow => {
+    const actions = actionsByProduct.get(String(p.id)) ?? [];
+    return {
+      productId: String(p.id),
+      sku: p.sku,
+      label: p.variation || p.name,
+      coverage: p.coverage_months != null ? Number(p.coverage_months) : null,
+      stock: Number(p.current_stock || 0),
+      state: productPushState(actions, todayISO),
+      actions,
+    };
+  };
+  const overstockIds = new Set(overstock.map((p) => String(p.id)));
+  const pushOverstock = overstock.map(toPushRow);
+  // Products acted on recently that are no longer overstocked — the "it worked" trail.
+  const windowStart = new Date(todayISO + "T00:00:00Z");
+  windowStart.setUTCDate(windowStart.getUTCDate() - PUSH_ACTION_WINDOW_DAYS);
+  const windowISO = windowStart.toISOString().slice(0, 10);
+  const pushTracked = products
+    .filter(
+      (p) =>
+        !overstockIds.has(String(p.id)) &&
+        (actionsByProduct.get(String(p.id)) ?? []).some((a) => a.startDate >= windowISO)
+    )
+    .map(toPushRow);
+  const pushPending = pushOverstock.filter((r) => isPushPending(r.state)).length;
+  const pushImproving = pushOverstock.filter((r) => r.state === "IMPROVED").length;
+  const pushAwaiting = pushOverstock.filter((r) => r.state === "AWAITING").length;
+
   // ---- Pending SCM actions: one entry per task type, pending vs done ----
   const upliftPending = upliftRows.filter((r) => r.resolution == null).length;
   const taskSummary: { label: string; href: string; pending: number; doneLabel: string | null }[] = [
@@ -341,6 +458,15 @@ export default async function InsightsPage() {
       pending: reorderCounts.delay.pending,
       doneLabel: reorderCounts.delay.done ? `${reorderCounts.delay.done} done` : null,
     },
+    {
+      label: "Push sales — log / follow up",
+      href: "#push-sales",
+      pending: pushPending,
+      doneLabel:
+        [pushImproving && `${pushImproving} improving`, pushAwaiting && `${pushAwaiting} awaiting`]
+          .filter(Boolean)
+          .join(" · ") || null,
+    },
   ];
   const totalPending = taskSummary.reduce((s, t) => s + t.pending, 0);
 
@@ -365,7 +491,7 @@ export default async function InsightsPage() {
             Pending = still needs a remark or fix from SCM · click a box to jump to it
           </div>
         </div>
-        <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+        <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
           {taskSummary.map((t) => (
             <a
               key={t.label}
@@ -411,16 +537,14 @@ export default async function InsightsPage() {
           }))}
           empty="Nothing below target."
         />
-        <ActionList
-          title={`Push sales — overstock > ${OVER} mo (${overstock.length})`}
-          tone="warn"
-          hint="excess stock · promote / push harder"
-          rows={overstock.map((p) => ({
-            sku: p.sku,
-            right: `${num(Number(p.coverage_months), 1)} mo · ${num(Number(p.current_stock))} u`,
-          }))}
-          empty="No ranges heavily overstocked."
-        />
+        <div id="push-sales" className="scroll-mt-20">
+          <PushSalesCard
+            overstock={pushOverstock}
+            tracked={pushTracked}
+            canAct={canEmailSupplier}
+            todayISO={todayISO}
+          />
+        </div>
       </div>
 
       {/* Demand uplift — spike vs the trailing 3-month average, per channel.
