@@ -65,15 +65,17 @@ export async function loadDashboardData(
   const amsEndMonth = selMonth === 1 ? 12 : selMonth - 1;
   const amsEndYear = selMonth === 1 ? selYear - 1 : selYear;
 
-  // Today in Asia/Kuala_Lumpur for bucketing.
+  // Incoming buckets and "Sold last mo" are anchored on the SELECTED stock week's
+  // month (not today), so a 22 Sep week shows Sep / Oct / Nov and last mo = Aug.
+  // Falls back to today in Asia/Kuala_Lumpur when there are no stock weeks yet.
   const nowKL = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kuala_Lumpur" }));
-  const curYear = nowKL.getFullYear();
-  const curMonth = nowKL.getMonth() + 1;
+  const curYear = selWeek ? selYear : nowKL.getFullYear();
+  const curMonth = selWeek ? selMonth : nowKL.getMonth() + 1;
   const prevMonth = curMonth === 1 ? 12 : curMonth - 1;
   const prevYear = curMonth === 1 ? curYear - 1 : curYear;
 
-  // Labels for the incoming-arrival buckets: current month, +1, +2 (KL), with a
-  // year suffix when the bucket rolls into a different year.
+  // Labels for the incoming-arrival buckets: stock month, +1, +2, with a year
+  // suffix when the bucket rolls into a different year.
   const incMonthLabels = [
     ...[0, 1, 2].map((off) => {
       const base = curMonth - 1 + off;
