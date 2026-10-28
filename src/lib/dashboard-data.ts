@@ -13,6 +13,16 @@ export const MONTHS = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug
 
 export type WeekTurnover = { week: string; turnover: number | null };
 
+/** One open in-transit line, for the dashboard's click-to-expand breakdown. */
+export type IncomingLine = {
+  bucket: keyof IncomingBuckets;
+  qty: number;
+  eta: string | null; // YYYY-MM-DD
+  poId: string | null;
+  /** null when the viewer's role can't read purchase_orders (e.g. STAFF). */
+  poNumber: string | null;
+};
+
 export type DashboardData = {
   snapWeeks: string[];
   selWeek: string | null;
@@ -25,6 +35,9 @@ export type DashboardData = {
   incMonthLabels: [string, string, string, string];
   products: (ProductRow & Record<string, any>)[];
   incomingMap: Record<string, IncomingBuckets>;
+  /** product_id → the PO lines behind incomingMap's numbers. */
+  incomingLines: Record<string, IncomingLine[]>;
+  todayISO: string;
   lastMonthSalesMap: Record<string, number>;
   inventoryValue: number;
   weightedTurnover: number | null;
@@ -94,7 +107,7 @@ export async function loadDashboardData(
       : Promise.resolve({ data: [] as any[] }),
     supabase
       .from("incoming_stock")
-      .select("product_id, quantity, expected_date")
+      .select("product_id, quantity, expected_date, po_id, purchase_orders(po_number)")
       .eq("status", "EXPECTED"),
     supabase
       .from("monthly_sales")
@@ -108,6 +121,7 @@ export async function loadDashboardData(
     .sort((a, b) => Number(b.ams_total) - Number(a.ams_total));
 
   const incomingMap: Record<string, IncomingBuckets> = {};
+  const incomingLines: Record<string, IncomingLine[]> = {};
   for (const row of incomingRows ?? []) {
     const d = new Date(row.expected_date);
     const monthsAhead = (d.getUTCFullYear() - curYear) * 12 + (d.getUTCMonth() + 1 - curMonth);
@@ -116,9 +130,19 @@ export async function loadDashboardData(
     const bucket: keyof IncomingBuckets =
       monthsAhead <= 0 ? "thisMonth" : monthsAhead === 1 ? "nextMonth" : monthsAhead === 2 ? "following" : "later";
     const pid = row.product_id;
+    const qty = Number(row.quantity || 0);
     if (!incomingMap[pid]) incomingMap[pid] = { thisMonth: 0, nextMonth: 0, following: 0, later: 0 };
-    incomingMap[pid][bucket] += Number(row.quantity || 0);
+    incomingMap[pid][bucket] += qty;
+    const po = (row as any).purchase_orders as { po_number?: string | null } | null;
+    (incomingLines[pid] ??= []).push({
+      bucket,
+      qty,
+      eta: (row.expected_date as string | null) ?? null,
+      poId: (row as any).po_id ?? null,
+      poNumber: po?.po_number ?? null,
+    });
   }
+  const todayISO = `${todayYear}-${String(todayMonth).padStart(2, "0")}-${String(nowKL.getDate()).padStart(2, "0")}`;
 
   const lastMonthSalesMap: Record<string, number> = {};
   for (const row of lastMonthRows ?? []) {
@@ -151,6 +175,8 @@ export async function loadDashboardData(
     incMonthLabels,
     products,
     incomingMap,
+    incomingLines,
+    todayISO,
     lastMonthSalesMap,
     inventoryValue,
     weightedTurnover: weightedTurnoverOf(products),

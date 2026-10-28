@@ -1,7 +1,9 @@
 "use client";
 
 import { Fragment, useState } from "react";
+import Link from "next/link";
 import { cn } from "@/lib/utils";
+import type { IncomingLine } from "@/lib/dashboard-data";
 
 export type ProductRow = {
   id: string;
@@ -48,6 +50,153 @@ function coverageClass(cov: number | null) {
   return "text-emerald-700";
 }
 
+type Bucket = keyof IncomingBuckets;
+/** Which incoming cell is expanded: a range row ("g:<family>") or a product ("p:<id>"). */
+type Detail = { key: string; bucket: Bucket } | null;
+
+const MON = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function fmtEta(iso: string | null) {
+  if (!iso) return "no ETA";
+  const [y, m, d] = iso.split("-").map(Number);
+  return `${d} ${MON[m]} ${y}`;
+}
+
+// A clickable in-transit number. Clicking expands the PO / ETA breakdown row
+// beneath it (clicking again, or another cell, switches/closes it).
+function IncomingCell({
+  value,
+  rowKey,
+  bucket,
+  detail,
+  setDetail,
+  clickable,
+  className,
+}: {
+  value: number;
+  rowKey: string;
+  bucket: Bucket;
+  detail: Detail;
+  setDetail: (d: Detail) => void;
+  clickable: boolean;
+  className: string;
+}) {
+  const active = detail?.key === rowKey && detail.bucket === bucket;
+  if (!clickable || !(value > 0)) {
+    return <td className={className}>{n(value)}</td>;
+  }
+  return (
+    <td className={cn(className, active && "bg-brand/10")}>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation(); // don't toggle the range row's expand
+          setDetail(active ? null : { key: rowKey, bucket });
+        }}
+        title="Show POs and ETAs"
+        className={cn(
+          "tabular-nums underline decoration-dotted underline-offset-4 decoration-gray-300 hover:text-brand hover:decoration-brand",
+          active && "text-brand decoration-brand"
+        )}
+      >
+        {n(value)}
+      </button>
+    </td>
+  );
+}
+
+// The expanded breakdown: one line per PO + ETA (+ variation on a range row).
+function IncomingDetailRow({
+  title,
+  monthLabel,
+  lines,
+  showProduct,
+  poLinkable,
+  todayISO,
+  colSpan,
+  onClose,
+}: {
+  title: string;
+  monthLabel: string;
+  lines: (IncomingLine & { product?: string })[];
+  showProduct: boolean;
+  poLinkable: boolean;
+  todayISO: string | null;
+  colSpan: number;
+  onClose: () => void;
+}) {
+  // Merge identical PO + ETA (+ product) lines; sort by ETA.
+  const merged = new Map<string, IncomingLine & { product?: string }>();
+  for (const l of lines) {
+    const k = `${l.poId ?? "-"}|${l.eta ?? "-"}|${showProduct ? l.product ?? "" : ""}`;
+    const cur = merged.get(k);
+    if (cur) cur.qty += l.qty;
+    else merged.set(k, { ...l });
+  }
+  const rows = [...merged.values()].sort(
+    (a, b) => (a.eta ?? "9999").localeCompare(b.eta ?? "9999") || (a.poNumber ?? "").localeCompare(b.poNumber ?? "")
+  );
+  const total = rows.reduce((s, r) => s + r.qty, 0);
+  const poCount = new Set(rows.map((r) => r.poId ?? r.poNumber ?? "-")).size;
+
+  return (
+    <tr className="border-b border-gray-100 bg-brand/5">
+      <td colSpan={colSpan} className="p-0">
+        <div className="sticky left-0 w-fit max-w-[100vw] px-4 py-2.5">
+          <div className="flex items-center gap-3 mb-1.5">
+            <span className="text-xs font-medium text-gray-700">
+              In transit · {monthLabel} · {title}
+            </span>
+            <span className="text-[11px] text-gray-400">
+              {poCount} PO{poCount === 1 ? "" : "s"} · {n(total)} units
+            </span>
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-[11px] text-gray-400 hover:text-gray-700"
+            >
+              Close ×
+            </button>
+          </div>
+          <table className="text-xs">
+            <thead>
+              <tr className="text-left text-gray-400">
+                <th className="py-0.5 pr-6 font-medium">PO</th>
+                <th className="py-0.5 pr-6 font-medium">ETA</th>
+                {showProduct && <th className="py-0.5 pr-6 font-medium">Variation</th>}
+                <th className="py-0.5 font-medium text-right">Units</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const overdue = !!(todayISO && r.eta && r.eta < todayISO);
+                return (
+                  <tr key={i} className="text-gray-700">
+                    <td className="py-0.5 pr-6 font-mono">
+                      {r.poNumber && r.poId && poLinkable ? (
+                        <Link href={`/purchase-orders/${r.poId}`} className="text-brand hover:underline">
+                          {r.poNumber}
+                        </Link>
+                      ) : (
+                        r.poNumber ?? <span className="text-gray-400">—</span>
+                      )}
+                    </td>
+                    <td className={cn("py-0.5 pr-6 tabular-nums", overdue && "text-red-600")}>
+                      {fmtEta(r.eta)}
+                      {overdue && <span className="ml-1 text-[10px]">overdue</span>}
+                    </td>
+                    {showProduct && <td className="py-0.5 pr-6">{r.product}</td>}
+                    <td className="py-0.5 text-right tabular-nums">{n(r.qty)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 type Group = {
   family: string;
   rows: ProductRow[];
@@ -70,10 +219,19 @@ export function GroupedInventory({
   lastMonthSalesMap,
   hideValue = false,
   incomingMonthLabels = ["This mo", "Next mo", "Following", "Later"],
+  incomingLines,
+  poLinkable = false,
+  todayISO = null,
 }: {
   products: ProductRow[];
   /** product_id → IncomingBuckets (may be absent if no incoming) */
   incomingMap?: Record<string, IncomingBuckets>;
+  /** product_id → PO lines behind the incoming numbers; enables click-to-expand. */
+  incomingLines?: Record<string, IncomingLine[]>;
+  /** Link PO numbers to the PO page (roles that can open POs). */
+  poLinkable?: boolean;
+  /** YYYY-MM-DD (KL) — ETAs before this are flagged overdue. */
+  todayISO?: string | null;
   /** product_id → total units sold in prev completed calendar month */
   lastMonthSalesMap?: Record<string, number>;
   /** Hide the monetary "Inv. value" column entirely (STAFF restricted view). */
@@ -83,6 +241,15 @@ export function GroupedInventory({
 }) {
   // All multi-product families start expanded
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [detail, setDetail] = useState<Detail>(null);
+  const clickable = !!incomingLines;
+  const colSpan = 11 + (hideValue ? 0 : 1);
+  const bucketLabel: Record<Bucket, string> = {
+    thisMonth: incomingMonthLabels[0],
+    nextMonth: incomingMonthLabels[1],
+    following: incomingMonthLabels[2],
+    later: incomingMonthLabels[3],
+  };
 
   // group by family
   const map = new Map<string, Group>();
@@ -204,18 +371,25 @@ export function GroupedInventory({
                   <td className="py-2.5 px-3 text-right tabular-nums text-gray-500">
                     {n(g.lastMonthSales)}
                   </td>
-                  <td className="py-2.5 px-3 text-right tabular-nums text-gray-500">
-                    {n(g.incomingThis)}
-                  </td>
-                  <td className="py-2.5 px-3 text-right tabular-nums text-gray-500">
-                    {n(g.incomingNext)}
-                  </td>
-                  <td className="py-2.5 px-3 text-right tabular-nums text-gray-500">
-                    {n(g.incomingFollowing)}
-                  </td>
-                  <td className="py-2.5 px-3 text-right tabular-nums text-gray-400">
-                    {n(g.incomingLater)}
-                  </td>
+                  {(
+                    [
+                      ["thisMonth", g.incomingThis, "text-gray-500"],
+                      ["nextMonth", g.incomingNext, "text-gray-500"],
+                      ["following", g.incomingFollowing, "text-gray-500"],
+                      ["later", g.incomingLater, "text-gray-400"],
+                    ] as [Bucket, number, string][]
+                  ).map(([b, v, tone]) => (
+                    <IncomingCell
+                      key={b}
+                      value={v}
+                      rowKey={"g:" + g.family}
+                      bucket={b}
+                      detail={detail}
+                      setDetail={setDetail}
+                      clickable={clickable}
+                      className={"py-2.5 px-3 text-right tabular-nums " + tone}
+                    />
+                  ))}
                   {!hideValue && (
                     <td className="py-2.5 px-3 text-right tabular-nums text-gray-600">
                       {rm(g.value)}
@@ -227,6 +401,22 @@ export function GroupedInventory({
                     </span>
                   </td>
                 </tr>
+                {detail?.key === "g:" + g.family && incomingLines && (
+                  <IncomingDetailRow
+                    title={g.family}
+                    monthLabel={bucketLabel[detail.bucket]}
+                    lines={g.rows.flatMap((p) =>
+                      (incomingLines[p.id] ?? [])
+                        .filter((l) => l.bucket === detail.bucket)
+                        .map((l) => ({ ...l, product: p.variation || p.name }))
+                    )}
+                    showProduct={multi}
+                    poLinkable={poLinkable}
+                    todayISO={todayISO}
+                    colSpan={colSpan}
+                    onClose={() => setDetail(null)}
+                  />
+                )}
                 {expanded &&
                   (() => {
                     return g.rows
@@ -235,8 +425,8 @@ export function GroupedInventory({
                       const pb = incomingMap?.[p.id] ?? { thisMonth: 0, nextMonth: 0, following: 0, later: 0 };
                       const ls = lastMonthSalesMap?.[p.id] ?? 0;
                       return (
+                        <Fragment key={p.id}>
                         <tr
-                          key={p.id}
                           className="border-b border-gray-100 bg-gray-50/40 text-gray-600"
                         >
                           {/* SKU is not shown — the variation name already identifies
@@ -262,18 +452,25 @@ export function GroupedInventory({
                           <td className="py-1.5 px-3 text-right tabular-nums">
                             {n(ls)}
                           </td>
-                          <td className="py-1.5 px-3 text-right tabular-nums">
-                            {n(pb.thisMonth)}
-                          </td>
-                          <td className="py-1.5 px-3 text-right tabular-nums">
-                            {n(pb.nextMonth)}
-                          </td>
-                          <td className="py-1.5 px-3 text-right tabular-nums">
-                            {n(pb.following)}
-                          </td>
-                          <td className="py-1.5 px-3 text-right tabular-nums text-gray-400">
-                            {n(pb.later)}
-                          </td>
+                          {(
+                            [
+                              ["thisMonth", pb.thisMonth, ""],
+                              ["nextMonth", pb.nextMonth, ""],
+                              ["following", pb.following, ""],
+                              ["later", pb.later, "text-gray-400"],
+                            ] as [Bucket, number, string][]
+                          ).map(([b, v, tone]) => (
+                            <IncomingCell
+                              key={b}
+                              value={v}
+                              rowKey={"p:" + p.id}
+                              bucket={b}
+                              detail={detail}
+                              setDetail={setDetail}
+                              clickable={clickable}
+                              className={"py-1.5 px-3 text-right tabular-nums " + tone}
+                            />
+                          ))}
                           {!hideValue && (
                             <td className="py-1.5 px-3 text-right tabular-nums">
                               {rm(p.inventory_value_myr)}
@@ -287,6 +484,21 @@ export function GroupedInventory({
                             </span>
                           </td>
                         </tr>
+                        {detail?.key === "p:" + p.id && incomingLines && (
+                          <IncomingDetailRow
+                            title={p.variation || p.name}
+                            monthLabel={bucketLabel[detail.bucket]}
+                            lines={(incomingLines[p.id] ?? []).filter(
+                              (l) => l.bucket === detail.bucket
+                            )}
+                            showProduct={false}
+                            poLinkable={poLinkable}
+                            todayISO={todayISO}
+                            colSpan={colSpan}
+                            onClose={() => setDetail(null)}
+                          />
+                        )}
+                        </Fragment>
                       );
                     });
                   })()}
