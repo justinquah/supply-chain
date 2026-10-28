@@ -51,8 +51,7 @@ function coverageClass(cov: number | null) {
 }
 
 type Bucket = keyof IncomingBuckets;
-/** Which incoming cell is expanded: a range row ("g:<family>") or a product ("p:<id>"). */
-type Detail = { key: string; bucket: Bucket } | null;
+const BUCKETS: Bucket[] = ["thisMonth", "nextMonth", "following", "later"];
 
 const MON = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 function fmtEta(iso: string | null) {
@@ -61,92 +60,59 @@ function fmtEta(iso: string | null) {
   return `${d} ${MON[m]} ${y}`;
 }
 
-// A clickable in-transit number. Clicking expands the PO / ETA breakdown row
-// beneath it (clicking again, or another cell, switches/closes it).
-function IncomingCell({
-  value,
-  rowKey,
-  bucket,
-  detail,
-  setDetail,
-  clickable,
-  className,
-}: {
-  value: number;
-  rowKey: string;
-  bucket: Bucket;
-  detail: Detail;
-  setDetail: (d: Detail) => void;
-  clickable: boolean;
-  className: string;
-}) {
-  const active = detail?.key === rowKey && detail.bucket === bucket;
-  if (!clickable || !(value > 0)) {
-    return <td className={className}>{n(value)}</td>;
-  }
-  return (
-    <td className={cn(className, active && "bg-brand/10")}>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation(); // don't toggle the range row's expand
-          setDetail(active ? null : { key: rowKey, bucket });
-        }}
-        title="Show POs and ETAs"
-        className={cn(
-          "tabular-nums underline decoration-dotted underline-offset-4 decoration-gray-300 hover:text-brand hover:decoration-brand",
-          active && "text-brand decoration-brand"
-        )}
-      >
-        {n(value)}
-      </button>
-    </td>
-  );
-}
+type MonthLine = IncomingLine & { family: string };
 
-// The expanded breakdown: one line per PO + ETA (+ variation on a range row).
-function IncomingDetailRow({
-  title,
+// Opened by clicking a month heading: every PO arriving in that month across
+// the products shown, one row per PO + ETA, with what's on it by range and the
+// total arrival quantity. Totals match the month column.
+function MonthDetailRow({
   monthLabel,
   lines,
-  showProduct,
   poLinkable,
   todayISO,
   colSpan,
   onClose,
 }: {
-  title: string;
   monthLabel: string;
-  lines: (IncomingLine & { product?: string })[];
-  showProduct: boolean;
+  lines: MonthLine[];
   poLinkable: boolean;
   todayISO: string | null;
   colSpan: number;
   onClose: () => void;
 }) {
-  // Merge identical PO + ETA (+ product) lines; sort by ETA.
-  const merged = new Map<string, IncomingLine & { product?: string }>();
+  type PoRow = {
+    poId: string | null;
+    poNumber: string | null;
+    eta: string | null;
+    units: number;
+    byFamily: Map<string, number>;
+  };
+  const byPo = new Map<string, PoRow>();
   for (const l of lines) {
-    const k = `${l.poId ?? "-"}|${l.eta ?? "-"}|${showProduct ? l.product ?? "" : ""}`;
-    const cur = merged.get(k);
-    if (cur) cur.qty += l.qty;
-    else merged.set(k, { ...l });
+    const k = `${l.poId ?? l.poNumber ?? "-"}|${l.eta ?? "-"}`;
+    let r = byPo.get(k);
+    if (!r) {
+      r = { poId: l.poId, poNumber: l.poNumber, eta: l.eta, units: 0, byFamily: new Map() };
+      byPo.set(k, r);
+    }
+    r.units += l.qty;
+    r.byFamily.set(l.family, (r.byFamily.get(l.family) ?? 0) + l.qty);
   }
-  const rows = [...merged.values()].sort(
-    (a, b) => (a.eta ?? "9999").localeCompare(b.eta ?? "9999") || (a.poNumber ?? "").localeCompare(b.poNumber ?? "")
+  const rows = [...byPo.values()].sort(
+    (a, b) =>
+      (a.eta ?? "9999").localeCompare(b.eta ?? "9999") ||
+      (a.poNumber ?? "").localeCompare(b.poNumber ?? "")
   );
-  const total = rows.reduce((s, r) => s + r.qty, 0);
+  const total = rows.reduce((s, r) => s + r.units, 0);
   const poCount = new Set(rows.map((r) => r.poId ?? r.poNumber ?? "-")).size;
 
   return (
-    <tr className="border-b border-gray-100 bg-brand/5">
+    <tr className="border-b border-gray-200 bg-brand/5">
       <td colSpan={colSpan} className="p-0">
-        <div className="sticky left-0 w-fit max-w-[100vw] px-4 py-2.5">
-          <div className="flex items-center gap-3 mb-1.5">
-            <span className="text-xs font-medium text-gray-700">
-              In transit · {monthLabel} · {title}
-            </span>
-            <span className="text-[11px] text-gray-400">
+        <div className="sticky left-0 w-fit max-w-[100vw] px-4 py-3">
+          <div className="flex items-center gap-3 mb-2">
+            <span className="text-sm font-medium text-gray-800">Arriving {monthLabel}</span>
+            <span className="text-xs text-gray-500">
               {poCount} PO{poCount === 1 ? "" : "s"} · {n(total)} units
             </span>
             <button
@@ -157,40 +123,55 @@ function IncomingDetailRow({
               Close ×
             </button>
           </div>
-          <table className="text-xs">
-            <thead>
-              <tr className="text-left text-gray-400">
-                <th className="py-0.5 pr-6 font-medium">PO</th>
-                <th className="py-0.5 pr-6 font-medium">ETA</th>
-                {showProduct && <th className="py-0.5 pr-6 font-medium">Variation</th>}
-                <th className="py-0.5 font-medium text-right">Units</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r, i) => {
-                const overdue = !!(todayISO && r.eta && r.eta < todayISO);
-                return (
-                  <tr key={i} className="text-gray-700">
-                    <td className="py-0.5 pr-6 font-mono">
-                      {r.poNumber && r.poId && poLinkable ? (
-                        <Link href={`/purchase-orders/${r.poId}`} className="text-brand hover:underline">
-                          {r.poNumber}
-                        </Link>
-                      ) : (
-                        r.poNumber ?? <span className="text-gray-400">—</span>
-                      )}
-                    </td>
-                    <td className={cn("py-0.5 pr-6 tabular-nums", overdue && "text-red-600")}>
-                      {fmtEta(r.eta)}
-                      {overdue && <span className="ml-1 text-[10px]">overdue</span>}
-                    </td>
-                    {showProduct && <td className="py-0.5 pr-6">{r.product}</td>}
-                    <td className="py-0.5 text-right tabular-nums">{n(r.qty)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          {rows.length === 0 ? (
+            <p className="text-xs text-gray-500">Nothing arriving in {monthLabel}.</p>
+          ) : (
+            <table className="text-xs">
+              <thead>
+                <tr className="text-left text-gray-400 border-b border-gray-200">
+                  <th className="py-1 pr-6 font-medium">PO</th>
+                  <th className="py-1 pr-6 font-medium">ETA</th>
+                  <th className="py-1 pr-6 font-medium">Product range</th>
+                  <th className="py-1 font-medium text-right">Arrival qty</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => {
+                  const overdue = !!(todayISO && r.eta && r.eta < todayISO);
+                  const fams = [...r.byFamily.entries()].sort((a, b) => b[1] - a[1]);
+                  return (
+                    <tr key={i} className="text-gray-700 border-b border-gray-100 last:border-0 align-top">
+                      <td className="py-1 pr-6 font-mono whitespace-nowrap">
+                        {r.poNumber && r.poId && poLinkable ? (
+                          <Link href={`/purchase-orders/${r.poId}`} className="text-brand hover:underline">
+                            {r.poNumber}
+                          </Link>
+                        ) : (
+                          r.poNumber ?? <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className={cn("py-1 pr-6 tabular-nums whitespace-nowrap", overdue && "text-red-600")}>
+                        {fmtEta(r.eta)}
+                        {overdue && <span className="ml-1 text-[10px]">overdue</span>}
+                      </td>
+                      <td className="py-1 pr-6">
+                        {fams.length === 1
+                          ? fams[0][0]
+                          : fams.map(([f, q]) => `${f} ${n(q)}`).join(" · ")}
+                      </td>
+                      <td className="py-1 text-right tabular-nums font-medium">{n(r.units)}</td>
+                    </tr>
+                  );
+                })}
+                <tr className="text-gray-800 border-t border-gray-300">
+                  <td className="pt-1.5 pr-6 font-medium" colSpan={3}>
+                    Total {monthLabel}
+                  </td>
+                  <td className="pt-1.5 text-right tabular-nums font-semibold">{n(total)}</td>
+                </tr>
+              </tbody>
+            </table>
+          )}
         </div>
       </td>
     </tr>
@@ -241,8 +222,8 @@ export function GroupedInventory({
 }) {
   // All multi-product families start expanded
   const [open, setOpen] = useState<Record<string, boolean>>({});
-  const [detail, setDetail] = useState<Detail>(null);
-  const clickable = !!incomingLines;
+  // Month heading clicked → that month's PO list opens above the rows.
+  const [openMonth, setOpenMonth] = useState<Bucket | null>(null);
   const colSpan = 11 + (hideValue ? 0 : 1);
   const bucketLabel: Record<Bucket, string> = {
     thisMonth: incomingMonthLabels[0],
@@ -250,6 +231,13 @@ export function GroupedInventory({
     following: incomingMonthLabels[2],
     later: incomingMonthLabels[3],
   };
+  // PO lines for the products in this table only, so the panel's total equals the column.
+  const monthLines = (b: Bucket): MonthLine[] =>
+    products.flatMap((p) =>
+      (incomingLines?.[p.id] ?? [])
+        .filter((l) => l.bucket === b)
+        .map((l) => ({ ...l, family: p.product_family || p.name }))
+    );
 
   // group by family
   const map = new Map<string, Group>();
@@ -319,13 +307,49 @@ export function GroupedInventory({
             <th className="pb-2 px-3 font-medium text-right border-l border-gray-200">AMS</th>
             <th className="pb-2 px-3 font-medium text-right">Online</th>
             <th className="pb-2 px-3 font-medium text-right">Offline</th>
-            <th className="pb-2 px-3 font-medium text-right border-l border-gray-200">{incomingMonthLabels[0]}</th>
-            <th className="pb-2 px-3 font-medium text-right">{incomingMonthLabels[1]}</th>
-            <th className="pb-2 px-3 font-medium text-right">{incomingMonthLabels[2]}</th>
-            <th className="pb-2 px-3 font-medium text-right">{incomingMonthLabels[3]}</th>
+            {BUCKETS.map((b, i) => {
+              const active = openMonth === b;
+              return (
+                <th
+                  key={b}
+                  className={cn(
+                    "pb-2 px-3 font-medium text-right",
+                    i === 0 && "border-l border-gray-200",
+                    active && "bg-brand/10"
+                  )}
+                >
+                  {incomingLines ? (
+                    <button
+                      type="button"
+                      onClick={() => setOpenMonth(active ? null : b)}
+                      title={`Show every PO arriving ${bucketLabel[b]}`}
+                      className={cn(
+                        "inline-flex items-center gap-1 hover:text-brand",
+                        active && "text-brand"
+                      )}
+                    >
+                      <span className="text-[10px]">{active ? "▾" : "▸"}</span>
+                      {bucketLabel[b]}
+                    </button>
+                  ) : (
+                    bucketLabel[b]
+                  )}
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
+          {openMonth && (
+            <MonthDetailRow
+              monthLabel={bucketLabel[openMonth]}
+              lines={monthLines(openMonth)}
+              poLinkable={poLinkable}
+              todayISO={todayISO}
+              colSpan={colSpan}
+              onClose={() => setOpenMonth(null)}
+            />
+          )}
           {groups.map((g) => {
             const multi = g.rows.length > 1;
             const expanded = isOpen(g.family, multi);
@@ -371,25 +395,18 @@ export function GroupedInventory({
                   <td className="py-2.5 px-3 text-right tabular-nums text-gray-500">
                     {n(g.lastMonthSales)}
                   </td>
-                  {(
-                    [
-                      ["thisMonth", g.incomingThis, "text-gray-500"],
-                      ["nextMonth", g.incomingNext, "text-gray-500"],
-                      ["following", g.incomingFollowing, "text-gray-500"],
-                      ["later", g.incomingLater, "text-gray-400"],
-                    ] as [Bucket, number, string][]
-                  ).map(([b, v, tone]) => (
-                    <IncomingCell
-                      key={b}
-                      value={v}
-                      rowKey={"g:" + g.family}
-                      bucket={b}
-                      detail={detail}
-                      setDetail={setDetail}
-                      clickable={clickable}
-                      className={"py-2.5 px-3 text-right tabular-nums " + tone}
-                    />
-                  ))}
+                  <td className="py-2.5 px-3 text-right tabular-nums text-gray-500">
+                    {n(g.incomingThis)}
+                  </td>
+                  <td className="py-2.5 px-3 text-right tabular-nums text-gray-500">
+                    {n(g.incomingNext)}
+                  </td>
+                  <td className="py-2.5 px-3 text-right tabular-nums text-gray-500">
+                    {n(g.incomingFollowing)}
+                  </td>
+                  <td className="py-2.5 px-3 text-right tabular-nums text-gray-400">
+                    {n(g.incomingLater)}
+                  </td>
                   {!hideValue && (
                     <td className="py-2.5 px-3 text-right tabular-nums text-gray-600">
                       {rm(g.value)}
@@ -401,22 +418,6 @@ export function GroupedInventory({
                     </span>
                   </td>
                 </tr>
-                {detail?.key === "g:" + g.family && incomingLines && (
-                  <IncomingDetailRow
-                    title={g.family}
-                    monthLabel={bucketLabel[detail.bucket]}
-                    lines={g.rows.flatMap((p) =>
-                      (incomingLines[p.id] ?? [])
-                        .filter((l) => l.bucket === detail.bucket)
-                        .map((l) => ({ ...l, product: p.variation || p.name }))
-                    )}
-                    showProduct={multi}
-                    poLinkable={poLinkable}
-                    todayISO={todayISO}
-                    colSpan={colSpan}
-                    onClose={() => setDetail(null)}
-                  />
-                )}
                 {expanded &&
                   (() => {
                     return g.rows
@@ -452,25 +453,18 @@ export function GroupedInventory({
                           <td className="py-1.5 px-3 text-right tabular-nums">
                             {n(ls)}
                           </td>
-                          {(
-                            [
-                              ["thisMonth", pb.thisMonth, ""],
-                              ["nextMonth", pb.nextMonth, ""],
-                              ["following", pb.following, ""],
-                              ["later", pb.later, "text-gray-400"],
-                            ] as [Bucket, number, string][]
-                          ).map(([b, v, tone]) => (
-                            <IncomingCell
-                              key={b}
-                              value={v}
-                              rowKey={"p:" + p.id}
-                              bucket={b}
-                              detail={detail}
-                              setDetail={setDetail}
-                              clickable={clickable}
-                              className={"py-1.5 px-3 text-right tabular-nums " + tone}
-                            />
-                          ))}
+                          <td className="py-1.5 px-3 text-right tabular-nums">
+                            {n(pb.thisMonth)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right tabular-nums">
+                            {n(pb.nextMonth)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right tabular-nums">
+                            {n(pb.following)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right tabular-nums text-gray-400">
+                            {n(pb.later)}
+                          </td>
                           {!hideValue && (
                             <td className="py-1.5 px-3 text-right tabular-nums">
                               {rm(p.inventory_value_myr)}
@@ -484,20 +478,6 @@ export function GroupedInventory({
                             </span>
                           </td>
                         </tr>
-                        {detail?.key === "p:" + p.id && incomingLines && (
-                          <IncomingDetailRow
-                            title={p.variation || p.name}
-                            monthLabel={bucketLabel[detail.bucket]}
-                            lines={(incomingLines[p.id] ?? []).filter(
-                              (l) => l.bucket === detail.bucket
-                            )}
-                            showProduct={false}
-                            poLinkable={poLinkable}
-                            todayISO={todayISO}
-                            colSpan={colSpan}
-                            onClose={() => setDetail(null)}
-                          />
-                        )}
                         </Fragment>
                       );
                     });

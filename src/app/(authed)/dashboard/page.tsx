@@ -203,7 +203,7 @@ export default async function DashboardPage({
           {stockAsOf && (
             <p className="px-4 pt-3 pb-1 text-xs text-gray-400">
               Stock as of <span className="font-medium text-gray-600">{stockAsOf}</span>
-              {" · "}Incoming bucketed by calendar month — click a number to see its POs &amp; ETAs · Last mo = {MONTHS[prevMonth]} {prevYear}
+              {" · "}Incoming bucketed by calendar month — click a month heading to see its POs &amp; ETAs · Last mo = {MONTHS[prevMonth]} {prevYear}
             </p>
           )}
           <GroupedInventory
