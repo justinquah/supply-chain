@@ -8,6 +8,7 @@ import { DocUpload } from "./doc-upload";
 import { Stepper } from "./stepper";
 import { StageForms } from "./stage-forms";
 import { StatusControl } from "./status-control";
+import { PoDangerZone } from "./po-danger-zone";
 import { ContainerForm } from "./container-form";
 import { ShipmentForms } from "./shipment-forms";
 import { ReceiptProofLink } from "./receipt-proof-link";
@@ -343,6 +344,13 @@ export default async function PurchaseOrderDetailPage({
                 SCM / Admin only. Moves the PO to any stage (forward or back) to
                 fix mistakes — the change is recorded in the audit log.
               </p>
+              <div className="mt-3">
+                <PoDangerZone
+                  poId={poRow.id}
+                  poNumber={(poRow.po_number as string | null) ?? null}
+                  status={String(poRow.status)}
+                />
+              </div>
             </div>
           )}
         </CardContent>

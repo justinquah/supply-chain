@@ -76,8 +76,9 @@ export function StatusControl({
       </Button>
       {!known && (
         <span className="text-xs text-amber-700">
-          Current status “{current}” is a legacy value — saving will move this PO
-          onto the current workflow.
+          {current === "CANCELLED"
+            ? "This PO is cancelled — pick a status and save to reopen it."
+            : `Current status “${current}” is a legacy value — saving will move this PO onto the current workflow.`}
         </span>
       )}
       {msg && (

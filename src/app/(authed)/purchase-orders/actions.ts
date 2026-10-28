@@ -1873,3 +1873,119 @@ export async function recordCreditNote(formData: FormData): Promise<ActionResult
   revalidatePo(poId);
   return { ok: true };
 }
+
+// ---------------------------------------------------------------------------
+// CANCEL / DELETE a PO — SCM / ADMIN.
+// Cancelled (and Draft) POs no longer count as incoming: a DB trigger
+// (migration 0051) parks their incoming_stock lines as ON_HOLD, and restores
+// them if the PO's status is set back into the workflow.
+// ---------------------------------------------------------------------------
+export async function cancelPurchaseOrder(
+  poId: string,
+  reason: string
+): Promise<{ ok: boolean; error?: string }> {
+  const profile = await requireRole("SCM", "ADMIN");
+  if (!poId) return { ok: false, error: "Missing PO" };
+  const why = reason?.trim();
+  if (!why) return { ok: false, error: "A reason is required to cancel a PO" };
+
+  const supabase = await createClient();
+  const { data: po } = await supabase
+    .from("purchase_orders")
+    .select("status, notes")
+    .eq("id", poId)
+    .maybeSingle();
+  if (!po) return { ok: false, error: "Purchase order not found" };
+  if (po.status === "CANCELLED") return { ok: true };
+  if (po.status === "COMPLETED")
+    return { ok: false, error: "A completed PO has been received and can't be cancelled" };
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  const note = `[Cancelled ${stamp} by ${profile.name ?? "SCM"}] ${why}`;
+  const { error } = await supabase
+    .from("purchase_orders")
+    .update({ status: "CANCELLED", notes: po.notes ? `${po.notes}\n${note}` : note })
+    .eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+
+  await createAdminClient().from("audit_log").insert({
+    actor_id: profile.id,
+    entity_type: "purchase_orders",
+    entity_id: poId,
+    action: "PO_CANCELLED",
+    old_value: { status: po.status },
+    new_value: { status: "CANCELLED", reason: why },
+  });
+
+  revalidatePo(poId);
+  revalidatePath("/insights");
+  return { ok: true };
+}
+
+// Permanent removal. Only Draft or Cancelled POs with no payments: deleting a
+// PO cascades to its payments, documents and history, and its incoming lines
+// would otherwise be orphaned (FK is SET NULL) and keep counting as incoming.
+export async function deletePurchaseOrder(
+  poId: string
+): Promise<{ ok: boolean; error?: string }> {
+  const profile = await requireRole("SCM", "ADMIN");
+  if (!poId) return { ok: false, error: "Missing PO" };
+
+  const admin = createAdminClient();
+  const { data: po } = await admin
+    .from("purchase_orders")
+    .select("po_number, status")
+    .eq("id", poId)
+    .maybeSingle();
+  if (!po) return { ok: false, error: "Purchase order not found" };
+  if (po.status !== "DRAFT" && po.status !== "CANCELLED")
+    return { ok: false, error: "Only Draft or Cancelled POs can be deleted — cancel it first" };
+
+  const { count: paymentCount } = await admin
+    .from("payments")
+    .select("id", { count: "exact", head: true })
+    .eq("po_id", poId);
+  if ((paymentCount ?? 0) > 0)
+    return {
+      ok: false,
+      error: `This PO has ${paymentCount} payment${paymentCount === 1 ? "" : "s"} recorded, so it can't be deleted. Keep it as Cancelled instead.`,
+    };
+
+  // Stored files: document and receipt-photo paths are both "<bucket>/<path>".
+  const [{ data: docs }, { data: photos }] = await Promise.all([
+    admin.from("po_documents").select("file_path").eq("po_id", poId),
+    admin.from("po_receipt_photos").select("file_path").eq("po_id", poId),
+  ]);
+  const byBucket = new Map<string, string[]>();
+  for (const d of [...(docs ?? []), ...(photos ?? [])]) {
+    const fp = String(d.file_path ?? "");
+    const i = fp.indexOf("/");
+    if (i <= 0) continue;
+    const list = byBucket.get(fp.slice(0, i)) ?? [];
+    list.push(fp.slice(i + 1));
+    byBucket.set(fp.slice(0, i), list);
+  }
+  for (const [bucket, paths] of byBucket) {
+    await admin.storage.from(bucket).remove(paths);
+  }
+
+  const { error: lineErr } = await admin.from("incoming_stock").delete().eq("po_id", poId);
+  if (lineErr) return { ok: false, error: `Could not remove the PO's lines: ${lineErr.message}` };
+
+  await admin.from("audit_log").insert({
+    actor_id: profile.id,
+    entity_type: "purchase_orders",
+    entity_id: poId,
+    action: "PO_DELETED",
+    old_value: { po_number: po.po_number, status: po.status },
+    new_value: null,
+  });
+
+  const { error } = await admin.from("purchase_orders").delete().eq("id", poId);
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/purchase-orders");
+  revalidatePath("/dashboard");
+  revalidatePath("/insights");
+  return { ok: true };
+}

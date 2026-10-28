@@ -5,6 +5,8 @@ import { PackFieldCell } from "./pack-field-cell";
 import { ShipmentFieldCell } from "./shipment-field-cell";
 import { CategoryCell, type CategoryOption } from "./category-cell";
 import { AddProductForm } from "./add-product-form";
+import { AddVariationInline } from "./add-variation-inline";
+import { ProductNameCell, RangeName } from "./rename-controls";
 import { ImportProductsForm } from "./import-products-form";
 
 function money(n: number | null, cur: string | null) {
@@ -120,11 +122,25 @@ export default async function ProductsPage({
             <Card key={fam}>
               <div className="px-4 py-3 border-b border-gray-100 flex flex-wrap items-center justify-between gap-2 bg-gray-50/60 rounded-t-lg">
                 <div>
-                  <div className="font-semibold text-gray-900">{fam}</div>
+                  <div>
+                    {/* Only a real product_family can be renamed as a range;
+                        a lone product without one falls back to its own name. */}
+                    {canManage && items[0]?.product_family === fam ? (
+                      <RangeName name={fam} />
+                    ) : (
+                      <span className="font-semibold text-gray-900">{fam}</span>
+                    )}
+                  </div>
                   <div className="text-xs text-gray-500">
                     {category || "—"} · {items.length} variation
                     {items.length === 1 ? "" : "s"}
                   </div>
+                  {canManage && items[0]?.product_family === fam && (
+                    <AddVariationInline
+                      family={fam}
+                      defaultCostCurrency={items[0]?.cost_currency ?? undefined}
+                    />
+                  )}
                 </div>
                 <div className="flex gap-6 text-sm">
                   <div className="text-right">
@@ -177,9 +193,11 @@ export default async function ProductsPage({
                           }
                         >
                           <td className="py-2 pl-4 pr-3">
-                            <span className="text-gray-900">
-                              {p.variation || p.name}
-                            </span>
+                            {canManage ? (
+                              <ProductNameCell productId={p.id} label={p.variation || p.name} />
+                            ) : (
+                              <span className="text-gray-900">{p.variation || p.name}</span>
+                            )}
                             {!p.is_main && (
                               <span className="ml-2 text-[10px] uppercase bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">
                                 GWP

@@ -437,3 +437,60 @@ export async function importProducts(formData: FormData): Promise<ImportProducts
 
   return { ok: true, inserted, skippedExisting, errors: errors.length ? errors : undefined };
 }
+
+// ---------------------------------------------------------------------------
+// Rename a product (SCM/ADMIN). For a variation, the variation label is what
+// the app shows; its full name ("<range> - <variation>") is kept in step.
+// A product without a variation is renamed directly.
+// ---------------------------------------------------------------------------
+export async function renameProduct(productId: string, label: string): Promise<ActionResult> {
+  await requireRole("SCM", "ADMIN");
+  const next = label?.trim();
+  if (!productId) return { ok: false, error: "Missing product" };
+  if (!next) return { ok: false, error: "Name can't be empty" };
+  if (next.length > 120) return { ok: false, error: "Name is too long (max 120 characters)" };
+
+  const supabase = await createClient();
+  const { data: p, error: readErr } = await supabase
+    .from("products")
+    .select("name, variation, product_family")
+    .eq("id", productId)
+    .maybeSingle();
+  if (readErr) return { ok: false, error: readErr.message };
+  if (!p) return { ok: false, error: "Product not found" };
+
+  let update: { name?: string; variation?: string };
+  if (p.variation) {
+    update = { variation: next };
+    if (p.product_family && p.name === `${p.product_family} - ${p.variation}`) {
+      update.name = `${p.product_family} - ${next}`;
+    }
+  } else {
+    update = { name: next };
+  }
+
+  const { error } = await supabase.from("products").update(update).eq("id", productId);
+  if (error) return { ok: false, error: error.message };
+
+  for (const path of ["/products", "/dashboard", "/sales/trend", "/insights"]) revalidatePath(path);
+  return { ok: true };
+}
+
+// Rename a whole range — products, its product_groups row and PO references, in
+// one transaction (rename_product_range, migration 0051). Refuses a name that
+// another range already uses.
+export async function renameRange(oldName: string, newName: string): Promise<ActionResult> {
+  await requireRole("SCM", "ADMIN");
+  const next = newName?.trim();
+  if (!oldName) return { ok: false, error: "Missing range" };
+  if (!next) return { ok: false, error: "Name can't be empty" };
+  if (next.length > 120) return { ok: false, error: "Name is too long (max 120 characters)" };
+
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("rename_product_range", { p_old: oldName, p_new: next });
+  if (error) return { ok: false, error: error.message };
+
+  for (const path of ["/products", "/dashboard", "/sales/trend", "/insights", "/purchase-orders"])
+    revalidatePath(path);
+  return { ok: true };
+}
