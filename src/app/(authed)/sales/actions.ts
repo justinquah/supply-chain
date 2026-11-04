@@ -16,7 +16,18 @@ export type ImportSalesResult = {
   year?: number;
   month?: number;
   channel?: "ONLINE" | "OFFLINE";
+  source?: SalesSource;
+  /** OFFLINE: SCommerce rows left out (they are uploaded as online). */
+  excludedSCommerceUnits?: number;
+  /** SCOMMERCE: rows skipped because their invoice date is in another month. */
+  skippedOtherMonthRows?: number;
 };
+
+/** MAIN = Qianyi (online) / AutoCount (offline); SCOMMERCE = Shopee-fulfilled online. */
+export type SalesSource = "MAIN" | "SCOMMERCE";
+// monthly_sales.platform for Shopee-fulfilled online rows.
+const SCOMMERCE_PLATFORM = "SCOMMERCE";
+const SCOMMERCE_RE = /scommerce/i;
 
 // Resolve a header value that may appear with or without a leading space
 // (the source Excel exports are inconsistent about this).
@@ -49,20 +60,78 @@ function aggregateOnline(wb: XLSX.WorkBook): Map<string, number> {
   return agg; // key: "sku||platform" -> qty
 }
 
-// Aggregate the OFFLINE (AutoCount) export: "From Autocount" sheet
-// (fallback first sheet), grouped by Item Code summing Qty.
-function aggregateOffline(wb: XLSX.WorkBook): Map<string, number> {
-  const sheet = wb.Sheets["From Autocount"] || wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: null });
+// AutoCount invoice exports (offline report and the SCommerce file) share one
+// layout: Doc Date, Debtor Name, Cancelled, Item Code, Qty. Use the named sheet
+// if present, else the first sheet whose header has Item Code + Qty.
+function autoCountRows(wb: XLSX.WorkBook): Record<string, unknown>[] {
+  const named = ["From Autocount", "AUTOCOUNT", "AutoCount"].find((n) => wb.Sheets[n]);
+  const name =
+    named ??
+    wb.SheetNames.find((n) => {
+      const head = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[n], { header: 1 })[0] ?? [];
+      const h = head.map((x) => String(x ?? "").trim());
+      return h.includes("Item Code") && h.includes("Qty");
+    }) ??
+    wb.SheetNames[0];
+  return XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[name], { defval: null });
+}
+
+// AutoCount dates arrive as Excel serial numbers (or text / Date).
+function docYearMonth(v: unknown): { y: number; m: number } | null {
+  if (v == null || v === "") return null;
+  if (typeof v === "number") {
+    const d = XLSX.SSF.parse_date_code(v);
+    return d ? { y: d.y, m: d.m } : null;
+  }
+  const d = v instanceof Date ? v : new Date(String(v));
+  return Number.isNaN(d.getTime()) ? null : { y: d.getFullYear(), m: d.getMonth() + 1 };
+}
+
+// Aggregate the OFFLINE (AutoCount) export, grouped by Item Code summing Qty.
+// SCommerce (Shopee fulfilment) rows are left out — they're uploaded as online.
+function aggregateOffline(wb: XLSX.WorkBook): { agg: Map<string, number>; excludedSCommerceUnits: number } {
   const agg = new Map<string, number>();
-  for (const r of rows) {
+  let excludedSCommerceUnits = 0;
+  for (const r of autoCountRows(wb)) {
     const code = String(cell(r, "Item Code") || "").trim();
     if (!code) continue;
     const qty = Number(cell(r, "Qty")) || 0;
     if (qty === 0) continue;
+    if (SCOMMERCE_RE.test(String(cell(r, "Debtor Name") ?? ""))) {
+      excludedSCommerceUnits += qty;
+      continue;
+    }
     agg.set(code, (agg.get(code) || 0) + qty);
   }
-  return agg; // key: sku -> qty
+  return { agg, excludedSCommerceUnits }; // key: sku -> qty
+}
+
+// Aggregate the SCommerce (Shopee fulfilment) AutoCount export for one month:
+// SCommerce debtor rows only (when the file has a Debtor Name column), not
+// cancelled, invoice date inside the selected month (when dated).
+function aggregateSCommerce(
+  wb: XLSX.WorkBook,
+  year: number,
+  month: number
+): { agg: Map<string, number>; skippedOtherMonthRows: number } {
+  const agg = new Map<string, number>();
+  let skippedOtherMonthRows = 0;
+  for (const r of autoCountRows(wb)) {
+    const code = String(cell(r, "Item Code") || "").trim();
+    if (!code) continue;
+    const debtor = cell(r, "Debtor Name");
+    if (debtor != null && !SCOMMERCE_RE.test(String(debtor))) continue;
+    if (String(cell(r, "Cancelled") ?? "").trim().toUpperCase() === "T") continue;
+    const ym = docYearMonth(cell(r, "Doc Date"));
+    if (ym && (ym.y !== year || ym.m !== month)) {
+      skippedOtherMonthRows++;
+      continue;
+    }
+    const qty = Number(cell(r, "Qty")) || 0;
+    if (qty === 0) continue;
+    agg.set(code, (agg.get(code) || 0) + qty);
+  }
+  return { agg, skippedOtherMonthRows };
 }
 
 export async function importSales(formData: FormData): Promise<ImportSalesResult> {
@@ -75,6 +144,8 @@ export async function importSales(formData: FormData): Promise<ImportSalesResult
   const year = Number(formData.get("year"));
   const month = Number(formData.get("month"));
   const channel = String(formData.get("channel") || "").toUpperCase();
+  const source: SalesSource =
+    String(formData.get("source") || "").toUpperCase() === "SCOMMERCE" ? "SCOMMERCE" : "MAIN";
   const file = formData.get("file");
 
   if (!Number.isFinite(year) || year < 2000) {
@@ -85,6 +156,9 @@ export async function importSales(formData: FormData): Promise<ImportSalesResult
   }
   if (channel !== "ONLINE" && channel !== "OFFLINE") {
     return { ok: false, error: "Invalid channel" };
+  }
+  if (source === "SCOMMERCE" && channel !== "ONLINE") {
+    return { ok: false, error: "SCommerce files count as online sales" };
   }
   if (!(file instanceof File) || file.size === 0) {
     return { ok: false, error: "No file uploaded" };
@@ -127,15 +201,34 @@ export async function importSales(formData: FormData): Promise<ImportSalesResult
   }
 
   // ---- Parse the uploaded file ----
-  const agg = channel === "ONLINE" ? aggregateOnline(wb) : aggregateOffline(wb);
+  let agg: Map<string, number>;
+  let excludedSCommerceUnits: number | undefined;
+  let skippedOtherMonthRows: number | undefined;
+  if (source === "SCOMMERCE") {
+    const r = aggregateSCommerce(wb, year, month);
+    agg = r.agg;
+    skippedOtherMonthRows = r.skippedOtherMonthRows;
+  } else if (channel === "ONLINE") {
+    agg = aggregateOnline(wb);
+  } else {
+    const r = aggregateOffline(wb);
+    agg = r.agg;
+    excludedSCommerceUnits = r.excludedSCommerceUnits;
+  }
+  if (source === "SCOMMERCE" && agg.size === 0) {
+    return {
+      ok: false,
+      error: `No SCommerce rows dated ${month}/${year} found in this file — check the month, or that it's the SCommerce AutoCount export.`,
+    };
+  }
 
-  // ---- Idempotent: clear existing rows for this period + channel ----
-  const { error: delErr } = await supabase
-    .from("monthly_sales")
-    .delete()
-    .eq("year", year)
-    .eq("month", month)
-    .eq("channel", channel);
+  // ---- Idempotent: clear this upload's own rows for the period ----
+  // The Qianyi and SCommerce online sources replace only their own rows, so
+  // uploading one never wipes the other.
+  let del = supabase.from("monthly_sales").delete().eq("year", year).eq("month", month).eq("channel", channel);
+  if (source === "SCOMMERCE") del = del.eq("platform", SCOMMERCE_PLATFORM);
+  else if (channel === "ONLINE") del = del.or(`platform.is.null,platform.neq.${SCOMMERCE_PLATFORM}`);
+  const { error: delErr } = await del;
   if (delErr) return { ok: false, error: `Could not clear existing rows: ${delErr.message}` };
 
   const unknownAgg = new Map<string, { count: number; units: number }>(); // sku -> {count, units}
@@ -154,7 +247,10 @@ export async function importSales(formData: FormData): Promise<ImportSalesResult
   for (const [key, qty] of agg) {
     let sku: string;
     let platform: string | null;
-    if (channel === "ONLINE") {
+    if (source === "SCOMMERCE") {
+      sku = key;
+      platform = SCOMMERCE_PLATFORM;
+    } else if (channel === "ONLINE") {
       const idx = key.lastIndexOf("||");
       sku = key.slice(0, idx);
       platform = key.slice(idx + 2);
@@ -197,18 +293,19 @@ export async function importSales(formData: FormData): Promise<ImportSalesResult
         year,
         month,
         channel,
+        source,
         file_name: file.name,
         rows_imported: inserts.length,
         units_total: knownUnits,
       },
-      { onConflict: "year,month,channel" }
+      { onConflict: "year,month,channel,source" }
     );
   } catch {
     // best-effort only
   }
 
   try {
-    const context = `sales upload ${year}-${String(month).padStart(2, "0")} ${channel}`;
+    const context = `sales upload ${year}-${String(month).padStart(2, "0")} ${source === "SCOMMERCE" ? "ONLINE (SCommerce)" : channel}`;
     for (const [sku, info] of unknownAgg) {
       // Mirror the CLI script's additive ON CONFLICT behaviour: bump the
       // existing occurrence_count rather than overwriting it.
@@ -242,6 +339,9 @@ export async function importSales(formData: FormData): Promise<ImportSalesResult
     year,
     month,
     channel: channel as "ONLINE" | "OFFLINE",
+    source,
+    excludedSCommerceUnits,
+    skippedOtherMonthRows,
   };
 }
 
@@ -257,8 +357,11 @@ export type ManualSalesProduct = {
   name: string;
   product_family: string | null;
   variation: string | null;
+  /** Online units excluding SCommerce — the part this grid edits. */
   online: number;
   offline: number;
+  /** SCommerce (Shopee fulfilment) online units — read-only here, owned by its upload. */
+  scommerce: number;
 };
 
 /**
@@ -289,23 +392,25 @@ export async function getManualSalesProducts(
       .order("variation", { ascending: true }),
     supabase
       .from("monthly_sales")
-      .select("main_product_id, channel, units_equivalent")
+      .select("main_product_id, channel, platform, units_equivalent")
       .eq("year", year)
       .eq("month", month),
   ]);
   if (prodErr) return { ok: false, error: `Could not load products: ${prodErr.message}` };
   if (salesErr) return { ok: false, error: `Could not load sales: ${salesErr.message}` };
 
-  const unitsByProduct = new Map<string, { online: number; offline: number }>();
+  const unitsByProduct = new Map<string, { online: number; offline: number; scommerce: number }>();
   for (const r of monthRows ?? []) {
-    const e = unitsByProduct.get(r.main_product_id) || { online: 0, offline: 0 };
-    if (r.channel === "ONLINE") e.online += Number(r.units_equivalent);
-    else e.offline += Number(r.units_equivalent);
+    const e = unitsByProduct.get(r.main_product_id) || { online: 0, offline: 0, scommerce: 0 };
+    const units = Number(r.units_equivalent);
+    if (r.channel === "ONLINE" && r.platform === SCOMMERCE_PLATFORM) e.scommerce += units;
+    else if (r.channel === "ONLINE") e.online += units;
+    else e.offline += units;
     unitsByProduct.set(r.main_product_id, e);
   }
 
   const products = (allProducts ?? []).map((p) => {
-    const u = unitsByProduct.get(p.id) || { online: 0, offline: 0 };
+    const u = unitsByProduct.get(p.id) || { online: 0, offline: 0, scommerce: 0 };
     return {
       id: p.id,
       sku: p.sku,
@@ -314,6 +419,7 @@ export async function getManualSalesProducts(
       variation: p.variation,
       online: u.online,
       offline: u.offline,
+      scommerce: u.scommerce,
     };
   });
 
@@ -372,13 +478,17 @@ export async function saveManualSales(
       // Blank means "leave alone" — do nothing for this (product, channel).
       if (value === null || value === undefined) continue;
 
-      const { error: delErr } = await adminClient
+      let del = adminClient
         .from("monthly_sales")
         .delete()
         .eq("year", year)
         .eq("month", month)
         .eq("channel", channel)
         .eq("main_product_id", row.product_id);
+      // SCommerce rows belong to their own upload — a manual online figure sits
+      // alongside them instead of absorbing them (else a re-upload double counts).
+      if (channel === "ONLINE") del = del.or(`platform.is.null,platform.neq.${SCOMMERCE_PLATFORM}`);
+      const { error: delErr } = await del;
       if (delErr) return { ok: false, error: `Could not clear existing row: ${delErr.message}` };
 
       if (!Number.isFinite(value) || value <= 0) continue; // 0/blank -> cleared only, no insert

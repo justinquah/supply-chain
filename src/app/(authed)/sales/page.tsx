@@ -15,6 +15,16 @@ function fmt(n: number) {
   return Math.round(n).toLocaleString("en-MY");
 }
 
+// monthly_sales.platform for Shopee-fulfilled online rows (see sales/actions.ts).
+const SCOMMERCE_PLATFORM = "SCOMMERCE";
+
+function ScommerceNote({ units }: { units: number }) {
+  if (!units) return null;
+  return (
+    <div className="text-[11px] text-gray-400 font-normal">incl. {fmt(units)} SCommerce</div>
+  );
+}
+
 export default async function SalesPage({
   searchParams,
 }: {
@@ -30,22 +40,25 @@ export default async function SalesPage({
   // Pull all monthly_sales rows (RLS allows all authenticated to read)
   const { data: sales } = await supabase
     .from("monthly_sales")
-    .select("year, month, channel, units_equivalent, main_product_id");
+    .select("year, month, channel, platform, units_equivalent, main_product_id");
 
   const rows = sales ?? [];
 
-  // Build period totals
+  // Build period totals. `scommerce` is the Shopee-fulfilment part of online
+  // (already included in `online`).
   const periods = new Map<
     string,
-    { year: number; month: number; online: number; offline: number }
+    { year: number; month: number; online: number; offline: number; scommerce: number }
   >();
   for (const r of rows) {
     const key = `${r.year}-${r.month}`;
     const p =
       periods.get(key) ||
-      { year: r.year, month: r.month, online: 0, offline: 0 };
+      { year: r.year, month: r.month, online: 0, offline: 0, scommerce: 0 };
     if (r.channel === "ONLINE") p.online += Number(r.units_equivalent);
     else p.offline += Number(r.units_equivalent);
+    if (r.channel === "ONLINE" && r.platform === SCOMMERCE_PLATFORM)
+      p.scommerce += Number(r.units_equivalent);
     periods.set(key, p);
   }
   const periodList = [...periods.values()].sort(
@@ -60,13 +73,13 @@ export default async function SalesPage({
   // Per-product breakdown for the selected month
   const { data: detail } = await supabase
     .from("monthly_sales")
-    .select("channel, units_equivalent, main_product_id, products(sku, product_family, variation, name)")
+    .select("channel, platform, units_equivalent, main_product_id, products(sku, product_family, variation, name)")
     .eq("year", selYear)
     .eq("month", selMonth);
 
   const prodMap = new Map<
     string,
-    { label: string; sku: string; online: number; offline: number }
+    { label: string; sku: string; online: number; offline: number; scommerce: number }
   >();
   for (const d of detail ?? []) {
     const prod = (d as any).products;
@@ -75,9 +88,11 @@ export default async function SalesPage({
       ? `${prod.product_family || prod.name}${prod.variation ? " · " + prod.variation : ""}`
       : "Unknown";
     const e =
-      prodMap.get(key) || { label, sku: prod?.sku || "", online: 0, offline: 0 };
+      prodMap.get(key) || { label, sku: prod?.sku || "", online: 0, offline: 0, scommerce: 0 };
     if (d.channel === "ONLINE") e.online += Number(d.units_equivalent);
     else e.offline += Number(d.units_equivalent);
+    if (d.channel === "ONLINE" && d.platform === SCOMMERCE_PLATFORM)
+      e.scommerce += Number(d.units_equivalent);
     prodMap.set(key, e);
   }
   const prodList = [...prodMap.values()]
@@ -161,6 +176,7 @@ export default async function SalesPage({
                     </td>
                     <td className="py-2 px-3 text-right tabular-nums text-gray-600">
                       {fmt(p.online)}
+                      <ScommerceNote units={p.scommerce} />
                     </td>
                     <td className="py-2 px-3 text-right tabular-nums text-gray-600">
                       {fmt(p.offline)}
@@ -217,6 +233,7 @@ export default async function SalesPage({
                     </td>
                     <td className="py-2 px-3 text-right tabular-nums text-gray-600">
                       {fmt(p.online)}
+                      <ScommerceNote units={p.scommerce} />
                     </td>
                     <td className="py-2 px-3 text-right tabular-nums text-gray-600">
                       {fmt(p.offline)}

@@ -18,7 +18,9 @@ export function SalesUploadForm() {
   const now = new Date();
   const [year, setYear] = useState(String(currentYear()));
   const [month, setMonth] = useState(String(now.getMonth() + 1));
-  const [channel, setChannel] = useState<"ONLINE" | "OFFLINE">("ONLINE");
+  // "SCOMMERCE" = Shopee-fulfilled online sales (AutoCount export, SCommerce
+  // Trading Malaysia) — stored as ONLINE alongside the Qianyi file.
+  const [channel, setChannel] = useState<"ONLINE" | "OFFLINE" | "SCOMMERCE">("ONLINE");
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<ImportSalesResult | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -34,7 +36,8 @@ export function SalesUploadForm() {
     const fd = new FormData();
     fd.set("year", year);
     fd.set("month", month);
-    fd.set("channel", channel);
+    fd.set("channel", channel === "SCOMMERCE" ? "ONLINE" : channel);
+    fd.set("source", channel === "SCOMMERCE" ? "SCOMMERCE" : "MAIN");
     fd.set("file", file);
 
     setUploading(true);
@@ -55,9 +58,12 @@ export function SalesUploadForm() {
       <CardContent>
         <form onSubmit={handleSubmit} className="space-y-4">
           <p className="text-sm text-gray-500">
-            Upload one file per month per channel — the ONLINE export from
-            Qianyi (shipped orders) or the OFFLINE &quot;From Autocount&quot;
-            export. Re-uploading a period replaces its existing rows.
+            Upload one file per month per source — the ONLINE export from Qianyi
+            (shipped orders), the SCommerce AutoCount export (Shopee-fulfilled
+            online sales, from Oct 2026) and the OFFLINE &quot;From Autocount&quot;
+            export. Re-uploading a source replaces only that source&rsquo;s rows
+            for the month. SCommerce rows in the offline file are skipped
+            automatically, so they&rsquo;re never counted twice.
           </p>
           <div className="flex flex-wrap items-end gap-3">
             <label className="flex flex-col gap-1 text-sm">
@@ -92,10 +98,13 @@ export function SalesUploadForm() {
               <span className="text-gray-600">Channel</span>
               <select
                 value={channel}
-                onChange={(e) => setChannel(e.target.value as "ONLINE" | "OFFLINE")}
+                onChange={(e) =>
+                  setChannel(e.target.value as "ONLINE" | "OFFLINE" | "SCOMMERCE")
+                }
                 className="border border-gray-300 rounded-md px-2 py-1.5 bg-white"
               >
                 <option value="ONLINE">Online (Qianyi)</option>
+                <option value="SCOMMERCE">Online — SCommerce (Shopee fulfilment)</option>
                 <option value="OFFLINE">Offline (AutoCount)</option>
               </select>
             </label>
@@ -121,8 +130,22 @@ export function SalesUploadForm() {
                 <p className="text-green-700">
                   Imported {result.imported} row{result.imported === 1 ? "" : "s"} (
                   {result.knownUnits?.toLocaleString("en-MY")} units) for{" "}
-                  {MONTHS[result.month || 0]} {result.year} {result.channel}.
+                  {MONTHS[result.month || 0]} {result.year}{" "}
+                  {result.source === "SCOMMERCE" ? "ONLINE (SCommerce)" : result.channel}.
                 </p>
+                {!!result.excludedSCommerceUnits && (
+                  <p className="text-gray-600">
+                    Left out {result.excludedSCommerceUnits.toLocaleString("en-MY")} SCommerce
+                    units found in the offline file — upload the SCommerce file as
+                    Online so they count as online sales.
+                  </p>
+                )}
+                {!!result.skippedOtherMonthRows && (
+                  <p className="text-gray-600">
+                    Skipped {result.skippedOtherMonthRows} row
+                    {result.skippedOtherMonthRows === 1 ? "" : "s"} dated in other months.
+                  </p>
+                )}
                 {result.unknownSkus && result.unknownSkus.length > 0 && (
                   <div className="border border-amber-200 bg-amber-50 rounded-md p-3">
                     <p className="font-medium text-amber-800">

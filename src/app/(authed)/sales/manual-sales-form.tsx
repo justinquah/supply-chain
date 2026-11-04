@@ -131,7 +131,9 @@ export function ManualSalesForm({
         <p className="text-sm text-gray-500">
           Fill in online/offline units per product for a month. Existing values
           for the selected month are pre-filled — leave a field blank to skip
-          that product, or clear it to zero out that product/channel.
+          that product, or clear it to zero out that product/channel. Online
+          here excludes SCommerce (Shopee fulfilment) units, which come only
+          from the SCommerce upload and are added on top.
         </p>
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex flex-col gap-1 text-sm">
@@ -189,7 +191,12 @@ export function ManualSalesForm({
               <thead className="sticky top-0 bg-white">
                 <tr className="text-left text-gray-500 border-b border-gray-200">
                   <th className="py-2 pl-3 pr-3 font-medium">Product</th>
-                  <th className="py-2 px-3 font-medium text-right w-32">Online units</th>
+                  <th
+                    className="py-2 px-3 font-medium text-right w-32"
+                    title="Excludes SCommerce units, which come from the SCommerce upload"
+                  >
+                    Online units
+                  </th>
                   <th className="py-2 pr-3 pl-3 font-medium text-right w-32">Offline units</th>
                 </tr>
               </thead>
@@ -218,6 +225,11 @@ export function ManualSalesForm({
                               onChange={(ev) => setValue(p.id, "online", ev.target.value)}
                               className="w-24 border border-gray-300 rounded-md px-2 py-1 text-right bg-white"
                             />
+                            {p.scommerce > 0 && (
+                              <div className="text-[11px] text-gray-400 mt-0.5">
+                                + {Math.round(p.scommerce).toLocaleString("en-MY")} SCommerce
+                              </div>
+                            )}
                           </td>
                           <td className="py-1.5 pr-3 pl-3 text-right">
                             <input
