@@ -5,6 +5,7 @@ import { SalesTrendTable, type TrendMonth, type TrendProductRow } from "@/compon
 import { Sparkline } from "@/components/sparkline";
 import { computeMomentum, fmtGrowth, type Momentum } from "@/lib/sales-trend";
 import { cn } from "@/lib/utils";
+import { fetchAll } from "@/lib/fetch-all";
 
 type Channel = "total" | "online" | "offline";
 
@@ -29,11 +30,17 @@ export default async function SalesTrendPage({
   const sp = await searchParams;
   const channel = parseChannel(sp.c);
 
-  const { data: sales } = await supabase
-    .from("monthly_sales")
-    .select(
-      "year, month, channel, units_equivalent, main_product_id, products(id, sku, name, product_family, variation, is_main, is_active, product_categories(name))"
-    );
+  // Paged — monthly_sales is past Supabase's 1,000-row response cap, and an
+  // unpaged read silently drops whole months.
+  const { data: sales } = await fetchAll((from, to) =>
+    supabase
+      .from("monthly_sales")
+      .select(
+        "year, month, channel, units_equivalent, main_product_id, products(id, sku, name, product_family, variation, is_main, is_active, product_categories(name))"
+      )
+      .order("id", { ascending: true })
+      .range(from, to)
+  );
 
   const rows = sales ?? [];
 

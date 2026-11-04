@@ -5,6 +5,7 @@ import { SalesUploadForm } from "./sales-upload-form";
 import { ManualSalesForm } from "./manual-sales-form";
 import { SalesManager } from "./sales-manager";
 import { getManualSalesProducts } from "./actions";
+import { fetchAll } from "@/lib/fetch-all";
 
 const MONTHS = [
   "", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -37,10 +38,15 @@ export default async function SalesPage({
   const profile = await getCurrentUser();
   const canUpload = !!profile && (["SCM", "ADMIN"] as string[]).includes(profile.role);
 
-  // Pull all monthly_sales rows (RLS allows all authenticated to read)
-  const { data: sales } = await supabase
-    .from("monthly_sales")
-    .select("year, month, channel, platform, units_equivalent, main_product_id");
+  // Pull all monthly_sales rows (RLS allows all authenticated to read). Paged —
+  // the table is past Supabase's 1,000-row response cap.
+  const { data: sales } = await fetchAll((from, to) =>
+    supabase
+      .from("monthly_sales")
+      .select("year, month, channel, platform, units_equivalent, main_product_id")
+      .order("id", { ascending: true })
+      .range(from, to)
+  );
 
   const rows = sales ?? [];
 

@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import * as XLSX from "xlsx";
 import { createClient, requireRole } from "@/lib/supabase/server";
 import { computeMomentum } from "@/lib/sales-trend";
+import { fetchAll } from "@/lib/fetch-all";
 
 // Sales-trend export as .xlsx. Mirrors the /sales/trend page's aggregation
 // (category → range → product) so the numbers match the on-screen table,
@@ -54,12 +55,16 @@ export async function GET(req: NextRequest) {
   const supabase = await createClient();
   const channel = parseChannel(req.nextUrl.searchParams.get("c"));
 
-  // Same shape / filters as page.tsx.
-  const { data: sales, error } = await supabase
-    .from("monthly_sales")
-    .select(
-      "year, month, channel, units_equivalent, main_product_id, products(id, sku, name, product_family, variation, is_main, is_active, product_categories(name))"
-    );
+  // Same shape / filters as page.tsx — paged past the 1,000-row cap.
+  const { data: sales, error } = await fetchAll((from, to) =>
+    supabase
+      .from("monthly_sales")
+      .select(
+        "year, month, channel, units_equivalent, main_product_id, products(id, sku, name, product_family, variation, is_main, is_active, product_categories(name))"
+      )
+      .order("id", { ascending: true })
+      .range(from, to)
+  );
   if (error) {
     return new Response(`Failed to load sales: ${error.message}`, { status: 500 });
   }
