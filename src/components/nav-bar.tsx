@@ -23,7 +23,7 @@ const ALL_NAV: { href: string; label: string; roles: string[] }[] = [
     label: "Sales Trend",
     roles: ["SCM", "ADMIN"],
   },
-  { href: "/sales/forecast", label: "Forecast", roles: ["SCM", "ADMIN"] },
+  { href: "/sales/forecast", label: "Forecast & Target", roles: ["SCM", "ADMIN"] },
   { href: "/purchase-orders", label: "PO & Invoices", roles: INTERNAL },
   {
     href: "/finance",

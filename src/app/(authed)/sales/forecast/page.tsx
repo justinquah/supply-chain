@@ -3,6 +3,7 @@ import { createClient, requireRole } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ForecastTable, type ForecastTableRow } from "@/components/forecast-table";
 import { loadForecastData } from "@/lib/forecast-store";
+import { parseTargetMonth, TargetsView } from "./targets-view";
 import {
   fromMonthIndex,
   METHOD_LABELS,
@@ -43,17 +44,63 @@ const EVAL_WINDOW = 6; // months averaged in the accuracy summary
 export default async function SalesForecastPage({
   searchParams,
 }: {
-  searchParams: Promise<{ c?: string }>;
+  searchParams: Promise<{ c?: string; view?: string; m?: string }>;
 }) {
   await requireRole("SCM", "ADMIN");
   const supabase = await createClient();
   const sp = await searchParams;
+  const view = sp.view === "targets" ? "targets" : "forecast";
   const channel = parseChannel(sp.c);
   const inScope = (ch: ForecastChannel) =>
     channel === "total" || (channel === "online" ? ch === "ONLINE" : ch === "OFFLINE");
 
   const data = await loadForecastData(supabase, { canWrite: true });
   const { products, points, complete, latestBase, live, saved, saveError } = data;
+
+  const viewTabs = (
+    <div className="flex items-center gap-1 border-b border-gray-200">
+      {(
+        [
+          ["forecast", "Forecast", "/sales/forecast"],
+          ["targets", "Targets", "/sales/forecast?view=targets"],
+        ] as const
+      ).map(([v, lbl, href]) => (
+        <Link
+          key={v}
+          href={href}
+          className={cn(
+            "px-4 py-2 -mb-px text-sm font-medium border-b-2 transition-colors",
+            view === v
+              ? "border-brand text-brand"
+              : "border-transparent text-gray-500 hover:text-gray-800"
+          )}
+        >
+          {lbl}
+        </Link>
+      ))}
+    </div>
+  );
+
+  if (view === "targets") {
+    return (
+      <div className="space-y-5">
+        <div>
+          <h1 className="text-2xl font-semibold">Forecast &amp; Target</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            Monthly units targets by channel and for focus products — compared with the forecast
+            until the month&rsquo;s sales are uploaded, then with the actual.
+          </p>
+        </div>
+        {viewTabs}
+        <TargetsView
+          supabase={supabase}
+          data={data}
+          requested={parseTargetMonth(sp.m)}
+          canEdit
+        />
+      </div>
+    );
+  }
 
   // Actual units per product × month for the selected channel scope.
   const actual = new Map<string, number>(); // `${pid}|${idx}`
@@ -68,9 +115,10 @@ export default async function SalesForecastPage({
   const totalActual = (idx: number) => products.reduce((s, p) => s + actualOf(p.id, idx), 0);
 
   const header = (
+    <>
     <div className="flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h1 className="text-2xl font-semibold">Sales Forecast</h1>
+        <h1 className="text-2xl font-semibold">Forecast &amp; Target</h1>
         <p className="text-sm text-gray-500 mt-1">
           {latestBase != null
             ? `Next 3 months from sales data through ${label(latestBase)} · ${CHANNEL_LABELS[channel]} · main-product-equivalent units`
@@ -92,6 +140,8 @@ export default async function SalesForecastPage({
         ))}
       </div>
     </div>
+    {viewTabs}
+    </>
   );
 
   if (latestBase == null) {

@@ -52,6 +52,8 @@ export type ForecastData = {
   saveError: string | null;
   /** base months written on this load */
   written: number[];
+  /** all products' units per month idx per channel (matches the Sales page) */
+  channelTotals: Map<number, Record<ForecastChannel, number>>;
 };
 
 const INSERT_CHUNK = 500;
@@ -92,10 +94,14 @@ export async function loadForecastData(
 
   const points: SalesPoint[] = [];
   const lastWriteByIdx = new Map<number, number>(); // month idx -> latest created_at (ms)
+  const channelTotals = new Map<number, Record<ForecastChannel, number>>();
   for (const r of (sales ?? []) as any[]) {
-    if (!ids.has(r.main_product_id)) continue;
     if (r.channel !== "ONLINE" && r.channel !== "OFFLINE") continue;
     const idx = monthIndex(r.year, r.month);
+    const tot = channelTotals.get(idx) ?? { ONLINE: 0, OFFLINE: 0 };
+    tot[r.channel as ForecastChannel] += Number(r.units_equivalent || 0);
+    channelTotals.set(idx, tot);
+    if (!ids.has(r.main_product_id)) continue;
     points.push({
       productId: r.main_product_id,
       channel: r.channel as ForecastChannel,
@@ -192,5 +198,5 @@ export async function loadForecastData(
     backtest_error: r.backtest_error == null ? null : Number(r.backtest_error),
   }));
 
-  return { products, points, complete, latestBase, live, saved, saveError, written };
+  return { products, points, complete, latestBase, live, saved, saveError, written, channelTotals };
 }
